@@ -19,9 +19,8 @@ const { sanitizeInput } = require('./src/middleware/security.middleware');
 const app = express();
 
 // Security Middleware
-app.use(helmet()); // Security headers
 app.use(cors({
-  origin: process.env.FRONTEND_URL || ['http://localhost:3000', 'http://localhost:3001'],
+  origin: '*',
   credentials: true
 }));
 app.use(compression()); // Gzip compression
@@ -53,6 +52,15 @@ app.get('/health', (req, res) => {
     message: 'Server is running',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// Test API
+app.get('/api/test', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Test API is working',
+    timestamp: new Date().toISOString()
   });
 });
 
