@@ -42,7 +42,7 @@ app.use(helmet({
 // CORS Configuration - SECURE
 const allowedOrigins = process.env.ALLOWED_ORIGINS 
   ? process.env.ALLOWED_ORIGINS.split(',')
-  : ['http://localhost:3000', 'http://localhost:3002'];
+  : ['https://godam-frontend.vercel', 'http://localhost:3002'];
 
 app.use(cors({
   origin: function (origin, callback) {
