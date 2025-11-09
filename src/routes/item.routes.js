@@ -1,9 +1,16 @@
 const express = require('express');
 const itemController = require('../controllers/item.controller');
+const { authenticate } = require('../middleware/auth.middleware');
+const { writeLimiter } = require('../middleware/rateLimiter.middleware');
+const { validateItem } = require('../middleware/security.middleware');
 
 const router = express.Router();
 
-router.post('/', itemController.createItem);
+// All routes require authentication
+router.use(authenticate);
+
+router.post('/', writeLimiter, validateItem, itemController.createItem);
+router.get('/stock-summary', itemController.getItemStockSummary);
 router.get('/', itemController.getItems);
 
 module.exports = router;

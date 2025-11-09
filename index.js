@@ -3,6 +3,8 @@ const cors = require("cors");
 const helmet = require('helmet');
 const compression = require('compression');
 require('dotenv').config();  // Load environment variables
+
+// Import routes
 const itemRoutes = require('./src/routes/item.routes');
 const laadRoutes = require('./src/routes/laad.routes');
 const saleRoutes = require('./src/routes/sale.routes');
@@ -13,26 +15,104 @@ const gateRoutes = require('./src/routes/gate.routes');
 const financialRoutes = require('./src/routes/financial.routes');
 const vehicleRoutes = require('./src/routes/vehicle.routes');
 const reportsRoutes = require('./src/routes/reports.routes');
+
+// Import middleware
 const logger = require('./src/config/logger');
 const { sanitizeInput } = require('./src/middleware/security.middleware');
+const { apiLimiter } = require('./src/middleware/rateLimiter.middleware');
 
 const app = express();
 
-// Security Middleware
-app.use(cors({
-  origin: '*',
-  credentials: true
+// Trust proxy (important for rate limiting behind reverse proxy)
+app.set('trust proxy', 1);
+
+// Security Headers with Helmet
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // Allow iframe embedding if needed
 }));
-app.use(compression()); // Gzip compression
 
-// Body parsing middleware
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// CORS Configuration - SECURE
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+  ? process.env.ALLOWED_ORIGINS.split(',')
+  : ['http://localhost:3000', 'http://localhost:3002'];
 
-// Security middleware (XSS protection only - no rate limiting)
-app.use(sanitizeInput); // XSS protection
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
+      callback(null, true);
+    } else {
+      logger.warn(`CORS blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Per-Page']
+}));
 
-// Routes
+// Compression middleware
+app.use(compression());
+
+// Body parsing middleware with size limits
+app.use(express.json({ 
+  limit: '10mb',
+  verify: (req, res, buf) => {
+    // Additional security: check for suspicious content
+    if (buf.length > 10 * 1024 * 1024) { // 10MB
+      throw new Error('Request body too large');
+    }
+  }
+}));
+app.use(express.urlencoded({ 
+  extended: true, 
+  limit: '10mb',
+  parameterLimit: 100 // Limit number of parameters                   
+}));
+
+// Rate limiting - Apply to all routes
+app.use('/api/', apiLimiter);
+
+// Security middleware - XSS protection
+app.use(sanitizeInput);
+
+// Request logging middleware
+app.use((req, res, next) => {
+  logger.info(`${req.method} ${req.path} - IP: ${req.ip}`);
+  next();
+});
+
+// API Routes with versioning
+const API_VERSION = '/api/v1';
+
+// Public routes (no authentication required)
+app.use(`${API_VERSION}/auth`, userRoutes); // Auth routes (login, register)
+app.use('/api/auth', userRoutes); // Backward compatibility for auth
+
+// Protected routes (authentication required)
+app.use(`${API_VERSION}/items`, itemRoutes);
+app.use(`${API_VERSION}/laads`, laadRoutes);
+app.use(`${API_VERSION}/sales`, saleRoutes);
+app.use(`${API_VERSION}/suppliers`, supplierRoutes);
+app.use(`${API_VERSION}/customers`, customerRoutes);
+app.use(`${API_VERSION}/users`, userRoutes);
+app.use(`${API_VERSION}/gate`, gateRoutes);
+app.use(`${API_VERSION}/financial`, financialRoutes);
+app.use(`${API_VERSION}/vehicles`, vehicleRoutes);
+app.use(`${API_VERSION}/reports`, reportsRoutes);
+
+// Backward compatibility - redirect old routes to new versioned routes
 app.use('/api/items', itemRoutes);
 app.use('/api/laads', laadRoutes);
 app.use('/api/sales', saleRoutes);
@@ -64,25 +144,14 @@ app.get('/api/test', (req, res) => {
   });
 });
 
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: 'Route not found',
-    path: req.originalUrl
-  });
-});
+// Import error handlers
+const { errorHandler, notFound } = require('./src/middleware/errorHandler.middleware');
 
-// Global error handler
-app.use((err, req, res, next) => {
-  logger.error('Global error handler:', err);
-  
-  res.status(err.status || 500).json({
-    success: false,
-    message: err.message || 'Internal server error',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
-  });
-});
+// 404 handler - must be after all routes
+app.use(notFound);
+
+// Global error handler - must be last
+app.use(errorHandler);
 
 const PORT = process.env.PORT || 8000;
 

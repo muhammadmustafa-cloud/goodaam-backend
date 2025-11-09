@@ -1,5 +1,7 @@
 const prisma = require('../config/prisma');
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+const logger = require('../config/logger');
 
 // Create user with single user constraint
 exports.createUser = async (req, res, next) => {
@@ -154,4 +156,88 @@ exports.getSystemUser = async (req, res, next) => {
 
     res.json({ success: true, data: user });
   } catch (err) { next(err); }
+};
+
+// Login user
+exports.login = async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email and password are required'
+      });
+    }
+
+    // Find user by email
+    const user = await prisma.user.findUnique({
+      where: { email: email.toLowerCase().trim() }
+    });
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    // Verify password
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password'
+      });
+    }
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { 
+        userId: user.id,
+        email: user.email,
+        role: user.role
+      },
+      process.env.JWT_SECRET || 'your-secret-key-change-in-production',
+      { 
+        expiresIn: process.env.JWT_EXPIRES_IN || '7d' // 7 days default
+      }
+    );
+
+    // Return user data (without password) and token
+    res.json({
+      success: true,
+      data: {
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role
+        },
+        token,
+        expiresIn: process.env.JWT_EXPIRES_IN || '7d'
+      },
+      message: 'Login successful'
+    });
+  } catch (err) {
+    logger.error('Login error:', err);
+    next(err);
+  }
+};
+
+// Verify token (for frontend to check if token is still valid)
+exports.verifyToken = async (req, res, next) => {
+  try {
+    // User is already attached by authenticate middleware
+    res.json({
+      success: true,
+      data: {
+        user: req.user
+      },
+      message: 'Token is valid'
+    });
+  } catch (err) {
+    next(err);
+  }
 };

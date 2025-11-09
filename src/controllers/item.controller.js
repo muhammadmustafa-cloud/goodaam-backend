@@ -13,3 +13,10 @@ exports.getItems = async (req, res, next) => {
     res.json({ success: true, data: items });
   } catch (err) { next(err); }
 };
+
+exports.getItemStockSummary = async (req, res, next) => {
+  try {
+    const summary = await svc.getItemStockSummary();
+    res.json({ success: true, data: summary });
+  } catch (err) { next(err); }
+};

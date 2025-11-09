@@ -15,6 +15,8 @@ model User {
   role      Role     @default(USER)  // Changed default to USER
   gateEntries GateEntry[]  // Phase 1: Gate entries created by user
   createdAt DateTime @default(now())
+
+  @@index([email]) // Index for faster login lookups
 }
 
 enum Role {
@@ -30,6 +32,8 @@ model Supplier {
   laads     Laad[]
   financialBalances FinancialBalance[]  // Phase 1: Financial balances
   createdAt DateTime @default(now())
+
+  @@index([name]) // Index for faster searches
 }
 
 model Customer {
@@ -40,6 +44,8 @@ model Customer {
   sales     Sale[]
   financialBalances FinancialBalance[]  // Phase 1: Financial balances
   createdAt DateTime @default(now())
+
+  @@index([name]) // Index for faster searches
 }
 
 model Laad {
@@ -55,6 +61,10 @@ model Laad {
   items        LaadItem[]
   gateEntries  GateEntry[]  // Phase 1: Gate entries for this laad
   createdAt    DateTime   @default(now())
+
+  @@index([supplierId]) // Index for faster supplier queries
+  @@index([arrivalDate]) // Index for date-based queries
+  @@index([laadNumber]) // Index for laad number lookups
 }
 
 model Item {
@@ -82,6 +92,10 @@ model LaadItem {
   kantyParchiNo     String?  // Phase 1: Kanty parchi number
   sales             Sale[]
   createdAt         DateTime @default(now())
+
+  @@index([laadId]) // Index for laad queries
+  @@index([itemId]) // Index for item queries
+  @@index([remainingBags]) // Index for stock availability queries
 }
 
 model Sale {
@@ -98,6 +112,11 @@ model Sale {
   mixOrderDetails Json?    // Phase 1: Mix order details (JSON)
   qualityGrade    String?  // Phase 1: Quality grade for this sale
   createdAt       DateTime @default(now())
+
+  @@index([customerId]) // Index for customer queries
+  @@index([laadItemId]) // Index for laad item queries
+  @@index([createdAt]) // Index for date-based queries
+  @@index([date]) // Index for sale date queries
 }
 
 // Phase 1: Gate Management System
@@ -119,6 +138,11 @@ model GateEntry {
   laadId               Int?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
+
+  @@index([status]) // Index for status queries
+  @@index([arrivalTime]) // Index for date-based queries
+  @@index([createdById]) // Index for user queries
+  @@index([truckNumber]) // Index for truck number lookups
 }
 
 enum GateStatus {
@@ -139,6 +163,10 @@ model FinancialBalance {
   balance     Decimal  @default(0)
   lastUpdated DateTime @default(now())
   createdAt   DateTime @default(now())
+
+  @@index([customerId]) // Index for customer balance queries
+  @@index([supplierId]) // Index for supplier balance queries
+  @@unique([customerId, supplierId]) // Ensure one balance per customer/supplier
 }
 
 // Phase 1: Vehicle Management
