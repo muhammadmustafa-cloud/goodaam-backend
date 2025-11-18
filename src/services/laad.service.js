@@ -37,8 +37,8 @@ exports.createLaadWithItems = async (payload) => {
             weightPerBag: it.weightPerBag || null,
             ratePerBag: it.ratePerBag ? parseFloat(it.ratePerBag) : null,
             totalAmount: totalAmount,
-            jacobabadParchiNo: it.jacobabadParchiNo || null,
-            kantyParchiNo: it.kantyParchiNo || null
+            weightFromJacobabad: it.weightFromJacobabad ? parseFloat(it.weightFromJacobabad) : null,
+            faisalabadWeight: it.faisalabadWeight ? parseFloat(it.faisalabadWeight) : null
           };
         }) }
       },

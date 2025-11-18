@@ -86,10 +86,10 @@ model LaadItem {
   remainingBags     Int
   qualityGrade      String?  // Phase 1: Quality grade (Medium, Fine, etc.)
   weightPerBag      Int?     // Phase 1: Weight per bag in kg
-  ratePerBag        Decimal? // Phase 1: Purchase rate per bag
+  ratePerBag        Decimal? // Phase 1: Purchase rate per bag (optional, not used in truck arrival)
   totalAmount       Decimal? // Phase 1: Total amount (totalBags × ratePerBag)
-  jacobabadParchiNo String?  // Phase 1: Jacobabad parchi number
-  kantyParchiNo     String?  // Phase 1: Kanty parchi number
+  weightFromJacobabad Decimal? // Phase 1: Weight from Jacobabad in kg
+  faisalabadWeight  Decimal? // Phase 1: Faisalabad weight in kg
   sales             Sale[]
   createdAt         DateTime @default(now())
 
