@@ -18,7 +18,7 @@ exports.createLaadWithItems = async (payload) => {
     throw new Error(`Expected items to be an array, but got ${typeof items}: ${JSON.stringify(items)}`);
   }
 
-  // Check if weight columns exist in database
+  // Check if weight columns exist in database BEFORE transaction
   let hasWeightColumns = false;
   try {
     const result = await prisma.$queryRaw`
@@ -44,6 +44,7 @@ exports.createLaadWithItems = async (payload) => {
         ? parseFloat(it.ratePerBag) * parseInt(it.totalBags)
         : null;
 
+      // Build base item WITHOUT weight fields first
       const baseItem = {
         itemId: it.itemId,
         totalBags: it.totalBags,
@@ -54,52 +55,38 @@ exports.createLaadWithItems = async (payload) => {
         totalAmount: totalAmount,
       };
 
-      // Only add weight fields if columns exist in database
-      // This prevents Prisma from trying to use non-existent columns
+      // CRITICAL: Only add weight fields if columns exist in database
+      // We create a new object to avoid Prisma validation issues
       if (hasWeightColumns) {
-        baseItem.weightFromJacobabad = it.weightFromJacobabad ? parseFloat(it.weightFromJacobabad) : null;
-        baseItem.faisalabadWeight = it.faisalabadWeight ? parseFloat(it.faisalabadWeight) : null;
+        // Columns exist - include weight fields
+        return {
+          ...baseItem,
+          weightFromJacobabad: it.weightFromJacobabad ? parseFloat(it.weightFromJacobabad) : null,
+          faisalabadWeight: it.faisalabadWeight ? parseFloat(it.faisalabadWeight) : null
+        };
+      } else {
+        // Columns DON'T exist - return base item WITHOUT weight fields
+        // This prevents Prisma from trying to use non-existent columns
+        return baseItem;
       }
-      // If columns don't exist, we simply don't include them in the data object
-
-      return baseItem;
     });
 
-    try {
-      const laad = await tx.laad.create({
-        data: {
-          ...laadData,
-          items: { create: itemData }
-        },
-        include: { 
-          supplier: true,
-          vehicle: true,
-          items: { 
-            include: { 
-              item: true 
-            } 
+    const laad = await tx.laad.create({
+      data: {
+        ...laadData,
+        items: { create: itemData }
+      },
+      include: { 
+        supplier: true,
+        vehicle: true,
+        items: { 
+          include: { 
+            item: true 
           } 
-        }
-      });
-      return laad;
-    } catch (error) {
-      // If error is about unknown arguments, it means Prisma Client expects fields that don't exist
-      // This happens when schema has fields but database doesn't
-      if (error.message && error.message.includes('Unknown argument')) {
-        const helpfulError = new Error(
-          'Database schema mismatch detected.\n\n' +
-          'The Prisma schema includes weight columns, but they don\'t exist in the database.\n\n' +
-          'SOLUTION: Run migration on production:\n' +
-          '1. SSH into your production server\n' +
-          '2. Run: npm run db:migrate:production\n' +
-          '3. Or run: node scripts/apply-production-migrations.js\n\n' +
-          'Original error: ' + error.message
-        );
-        helpfulError.status = 500;
-        throw helpfulError;
+        } 
       }
-      throw error;
-    }
+    });
+    return laad;
   });
 
   return result;
