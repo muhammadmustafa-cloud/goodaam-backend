@@ -15,6 +15,7 @@ const gateRoutes = require('./src/routes/gate.routes');
 const financialRoutes = require('./src/routes/financial.routes');
 const vehicleRoutes = require('./src/routes/vehicle.routes');
 const reportsRoutes = require('./src/routes/reports.routes');
+const migrationRoutes = require('./src/routes/migration.routes');
 
 // Import middleware
 const logger = require('./src/config/logger');
@@ -110,6 +111,7 @@ app.use('/api/gate', gateRoutes);
 app.use('/api/financial', financialRoutes);
 app.use('/api/vehicles', vehicleRoutes);
 app.use('/api/reports', reportsRoutes);
+app.use('/api/migrations', migrationRoutes);
 
 
 // Health check
