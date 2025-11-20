@@ -16,8 +16,27 @@ exports.createMixOrder = async (req, res, next) => {
 
 exports.getSales = async (req, res, next) => {
   try {
-    const rows = await svc.getSales();
+    const filters = {
+      dateFrom: req.query.dateFrom,
+      dateTo: req.query.dateTo,
+      customerId: req.query.customerId,
+      laadNumber: req.query.laadNumber
+    };
+    const rows = await svc.getSales(filters);
     res.json({ success: true, data: rows });
+  } catch (err) { next(err); }
+};
+
+exports.getSaleById = async (req, res, next) => {
+  try {
+    const sale = await svc.getSaleById(req.params.id);
+    if (!sale) {
+      return res.status(404).json({
+        success: false,
+        message: 'Sale not found'
+      });
+    }
+    res.json({ success: true, data: sale });
   } catch (err) { next(err); }
 };
 

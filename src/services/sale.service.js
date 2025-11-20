@@ -1,7 +1,17 @@
 const prisma = require('../config/prisma');
 
 exports.createSale = async (payload) => {
-  const { customerId, laadItemId, bagsSold, qualityGrade, ratePerBag } = payload;
+  const { 
+    customerId, 
+    laadItemId, 
+    bagsSold, 
+    qualityGrade, 
+    ratePerBag,
+    laadNumber,
+    truckNumber,
+    address,
+    date
+  } = payload;
   
   if (!customerId || !laadItemId || !Number.isInteger(bagsSold)) {
     const e = new Error('customerId, laadItemId and integer bagsSold are required');
@@ -25,7 +35,8 @@ exports.createSale = async (payload) => {
 
     // Check if laadItem exists
     const laadItem = await tx.laadItem.findUnique({ 
-      where: { id: laadItemId } 
+      where: { id: laadItemId },
+      include: { laad: true }
     });
     if (!laadItem) {
       const e = new Error(`LaadItem with ID ${laadItemId} not found`);
@@ -38,10 +49,13 @@ exports.createSale = async (payload) => {
       e.status = 400; throw e;
     }
 
-    // Auto-calculate totalAmount if ratePerBag is provided
+    // Auto-calculate totalAmount if ratePerBag is provided (optional for stock items)
     const totalAmount = ratePerBag && bagsSold 
       ? parseFloat(ratePerBag) * bagsSold
       : null;
+
+    // Get laadNumber from laadItem if not provided
+    const finalLaadNumber = laadNumber || laadItem.laad?.laadNumber || null;
 
     // Create sale
     const sale = await tx.sale.create({
@@ -52,14 +66,22 @@ exports.createSale = async (payload) => {
         ratePerBag: ratePerBag ? parseFloat(ratePerBag) : null,
         totalAmount: totalAmount,
         qualityGrade: qualityGrade || null,
-        isMixOrder: false
+        isMixOrder: false,
+        laadNumber: finalLaadNumber,
+        truckNumber: truckNumber || null,
+        address: address || null,
+        date: date ? new Date(date) : new Date()
       },
       include: {
         customer: true,
         laadItem: {
           include: {
             item: true,
-            laad: true
+            laad: {
+              include: {
+                supplier: true
+              }
+            }
           }
         }
       }
@@ -182,15 +204,57 @@ exports.createMixOrder = async (payload) => {
   });
 };
 
-exports.getSales = async () => {
+exports.getSales = async (filters = {}) => {
+  const { dateFrom, dateTo, customerId, laadNumber } = filters;
+  
+  const where = {};
+  
+  if (dateFrom || dateTo) {
+    where.date = {};
+    if (dateFrom) where.date.gte = new Date(dateFrom);
+    if (dateTo) where.date.lte = new Date(dateTo);
+  }
+  
+  if (customerId) {
+    where.customerId = parseInt(customerId);
+  }
+  
+  if (laadNumber) {
+    where.laadNumber = laadNumber;
+  }
+
   return prisma.sale.findMany({
+    where,
     orderBy: { date: 'desc' },
     include: { 
       customer: true, 
       laadItem: { 
         include: { 
           item: true, 
-          laad: true 
+          laad: {
+            include: {
+              supplier: true
+            }
+          }
+        } 
+      } 
+    }
+  });
+};
+
+exports.getSaleById = async (id) => {
+  return prisma.sale.findUnique({
+    where: { id: parseInt(id) },
+    include: { 
+      customer: true, 
+      laadItem: { 
+        include: { 
+          item: true, 
+          laad: {
+            include: {
+              supplier: true
+            }
+          }
         } 
       } 
     }

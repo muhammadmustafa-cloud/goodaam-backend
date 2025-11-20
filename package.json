@@ -9,7 +9,10 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "node prisma/seed.js",
-    "db:reset": "prisma migrate reset"
+    "db:reset": "prisma migrate reset",
+    "db:migrate:weight-columns": "node scripts/apply-weight-columns-migration.js",
+    "db:migrate:remove-laad-unique": "node scripts/remove-laad-number-unique-constraint.js",
+    "db:migrate:process-sale-fields": "node scripts/apply-process-sale-fields-migration.js"
   },
   "keywords": [],
   "author": "",

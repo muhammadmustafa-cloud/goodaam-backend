@@ -8,13 +8,13 @@ datasource db {
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  name      String
-  email     String   @unique
-  password  String
-  role      Role     @default(USER)  // Changed default to USER
-  gateEntries GateEntry[]  // Phase 1: Gate entries created by user
-  createdAt DateTime @default(now())
+  id          Int         @id @default(autoincrement())
+  name        String
+  email       String      @unique
+  password    String
+  role        Role        @default(USER) // Changed default to USER
+  gateEntries GateEntry[] // Phase 1: Gate entries created by user
+  createdAt   DateTime    @default(now())
 
   @@index([email]) // Index for faster login lookups
 }
@@ -25,42 +25,42 @@ enum Role {
 }
 
 model Supplier {
-  id        Int      @id @default(autoincrement())
-  name      String
-  contact   String?
-  address   String?
-  laads     Laad[]
-  financialBalances FinancialBalance[]  // Phase 1: Financial balances
-  createdAt DateTime @default(now())
+  id                Int                @id @default(autoincrement())
+  name              String
+  contact           String?
+  address           String?
+  laads             Laad[]
+  financialBalances FinancialBalance[] // Phase 1: Financial balances
+  createdAt         DateTime           @default(now())
 
   @@index([name]) // Index for faster searches
 }
 
 model Customer {
-  id        Int      @id @default(autoincrement())
-  name      String
-  contact   String?
-  address   String?
-  sales     Sale[]
-  financialBalances FinancialBalance[]  // Phase 1: Financial balances
-  createdAt DateTime @default(now())
+  id                Int                @id @default(autoincrement())
+  name              String
+  contact           String?
+  address           String?
+  sales             Sale[]
+  financialBalances FinancialBalance[] // Phase 1: Financial balances
+  createdAt         DateTime           @default(now())
 
   @@index([name]) // Index for faster searches
 }
 
 model Laad {
-  id           Int        @id @default(autoincrement())
-  laadNumber   String     @unique
+  id            Int         @id @default(autoincrement())
+  laadNumber    String
   vehicleNumber String?
-  vehicle      Vehicle?   @relation(fields: [vehicleId], references: [id])
-  vehicleId    Int?
-  arrivalDate  DateTime
-  notes        String?
-  supplier     Supplier   @relation(fields: [supplierId], references: [id])
-  supplierId   Int
-  items        LaadItem[]
-  gateEntries  GateEntry[]  // Phase 1: Gate entries for this laad
-  createdAt    DateTime   @default(now())
+  vehicle       Vehicle?    @relation(fields: [vehicleId], references: [id])
+  vehicleId     Int?
+  arrivalDate   DateTime
+  notes         String?
+  supplier      Supplier    @relation(fields: [supplierId], references: [id])
+  supplierId    Int
+  items         LaadItem[]
+  gateEntries   GateEntry[] // Phase 1: Gate entries for this laad
+  createdAt     DateTime    @default(now())
 
   @@index([supplierId]) // Index for faster supplier queries
   @@index([arrivalDate]) // Index for date-based queries
@@ -68,30 +68,30 @@ model Laad {
 }
 
 model Item {
-  id         Int        @id @default(autoincrement())
-  name       String
-  quality    String
-  bagWeight  Int
-  laadItems  LaadItem[]
-  createdAt  DateTime   @default(now())
+  id        Int        @id @default(autoincrement())
+  name      String
+  quality   String
+  bagWeight Int
+  laadItems LaadItem[]
+  createdAt DateTime   @default(now())
 }
 
 model LaadItem {
-  id                Int      @id @default(autoincrement())
-  laad              Laad     @relation(fields: [laadId], references: [id])
-  laadId            Int
-  item              Item     @relation(fields: [itemId], references: [id])
-  itemId            Int
-  totalBags         Int
-  remainingBags     Int
-  qualityGrade      String?  // Phase 1: Quality grade (Medium, Fine, etc.)
-  weightPerBag      Int?     // Phase 1: Weight per bag in kg
-  ratePerBag        Decimal? // Phase 1: Purchase rate per bag (optional, not used in truck arrival)
-  totalAmount       Decimal? // Phase 1: Total amount (totalBags × ratePerBag)
+  id                  Int      @id @default(autoincrement())
+  laad                Laad     @relation(fields: [laadId], references: [id])
+  laadId              Int
+  item                Item     @relation(fields: [itemId], references: [id])
+  itemId              Int
+  totalBags           Int
+  remainingBags       Int
+  qualityGrade        String? // Phase 1: Quality grade (Medium, Fine, etc.)
+  weightPerBag        Int? // Phase 1: Weight per bag in kg
+  ratePerBag          Decimal? // Phase 1: Purchase rate per bag (optional, not used in truck arrival)
+  totalAmount         Decimal? // Phase 1: Total amount (totalBags × ratePerBag)
   weightFromJacobabad Decimal? // Phase 1: Weight from Jacobabad in kg
-  faisalabadWeight  Decimal? // Phase 1: Faisalabad weight in kg
-  sales             Sale[]
-  createdAt         DateTime @default(now())
+  faisalabadWeight    Decimal? // Phase 1: Faisalabad weight in kg
+  sales               Sale[]
+  createdAt           DateTime @default(now())
 
   @@index([laadId]) // Index for laad queries
   @@index([itemId]) // Index for item queries
@@ -106,38 +106,43 @@ model Sale {
   laadItem        LaadItem @relation(fields: [laadItemId], references: [id])
   laadItemId      Int
   bagsSold        Int
-  ratePerBag      Decimal? // Phase 1: Sale rate per bag
-  totalAmount     Decimal? // Phase 1: Total sale amount (bagsSold × ratePerBag)
-  isMixOrder      Boolean  @default(false)  // Phase 1: Mix order support
-  mixOrderDetails Json?    // Phase 1: Mix order details (JSON)
-  qualityGrade    String?  // Phase 1: Quality grade for this sale
+  ratePerBag      Decimal? // Optional: Sale rate per bag (not required for stock items)
+  totalAmount     Decimal? // Optional: Total sale amount (bagsSold × ratePerBag)
+  isMixOrder      Boolean  @default(false) // Phase 1: Mix order support
+  mixOrderDetails Json? // Phase 1: Mix order details (JSON)
+  qualityGrade    String? // Phase 1: Quality grade for this sale
+  laadNumber      String? // Process Sale: Laad number from which stock was sold
+  truckNumber     String? // Process Sale: Truck number for delivery
+  address         String? // Process Sale: Delivery address/adda
   createdAt       DateTime @default(now())
 
   @@index([customerId]) // Index for customer queries
   @@index([laadItemId]) // Index for laad item queries
   @@index([createdAt]) // Index for date-based queries
   @@index([date]) // Index for sale date queries
+  @@index([laadNumber]) // Index for laad number lookups
+  @@index([truckNumber]) // Index for truck number lookups
 }
 
 // Phase 1: Gate Management System
 model GateEntry {
-  id                    Int      @id @default(autoincrement())
-  truckNumber           String
+  id                   Int        @id @default(autoincrement())
+  truckNumber          String
   driverName           String?
-  arrivalTime          DateTime @default(now())
+  arrivalTime          DateTime   @default(now())
   weightMachineReading Decimal?
   grossWeight          Decimal?
   tareWeight           Decimal?
   netWeight            Decimal?
-  gatepassNumber       String?  @unique
+  gatepassNumber       String?    @unique
   status               GateStatus @default(PENDING)
-  notes                String?  // Phase 2: Additional notes for gate entry
-  createdBy            User     @relation(fields: [createdById], references: [id])
+  notes                String? // Phase 2: Additional notes for gate entry
+  createdBy            User       @relation(fields: [createdById], references: [id])
   createdById          Int
-  laad                 Laad?    @relation(fields: [laadId], references: [id])
+  laad                 Laad?      @relation(fields: [laadId], references: [id])
   laadId               Int?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
 
   @@index([status]) // Index for status queries
   @@index([arrivalTime]) // Index for date-based queries
@@ -155,32 +160,32 @@ enum GateStatus {
 
 // Phase 1: Financial Balance Tracking
 model FinancialBalance {
-  id          Int      @id @default(autoincrement())
+  id          Int       @id @default(autoincrement())
   customer    Customer? @relation(fields: [customerId], references: [id])
   customerId  Int?
   supplier    Supplier? @relation(fields: [supplierId], references: [id])
   supplierId  Int?
-  balance     Decimal  @default(0)
-  lastUpdated DateTime @default(now())
-  createdAt   DateTime @default(now())
+  balance     Decimal   @default(0)
+  lastUpdated DateTime  @default(now())
+  createdAt   DateTime  @default(now())
 
+  @@unique([customerId, supplierId]) // Ensure one balance per customer/supplier
   @@index([customerId]) // Index for customer balance queries
   @@index([supplierId]) // Index for supplier balance queries
-  @@unique([customerId, supplierId]) // Ensure one balance per customer/supplier
 }
 
 // Phase 1: Vehicle Management
 model Vehicle {
-  id          Int      @id @default(autoincrement())
-  number      String   @unique  // Vehicle registration number (ABC-123)
-  type        VehicleType  // Truck, Pickup, Loader, etc.
-  capacity    Decimal? // Capacity in tons
-  ownerName   String?
+  id           Int         @id @default(autoincrement())
+  number       String      @unique // Vehicle registration number (ABC-123)
+  type         VehicleType // Truck, Pickup, Loader, etc.
+  capacity     Decimal? // Capacity in tons
+  ownerName    String?
   ownerContact String?
-  isActive    Boolean  @default(true)
-  laads       Laad[]
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  isActive     Boolean     @default(true)
+  laads        Laad[]
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
 }
 
 enum VehicleType {

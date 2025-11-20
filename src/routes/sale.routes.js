@@ -12,6 +12,7 @@ router.use(authenticate);
 // Regular sales
 router.post('/', writeLimiter, validateSale, ctrl.createSale);
 router.get('/', ctrl.getSales);
+router.get('/:id', ctrl.getSaleById);
 
 // Mix orders
 router.post('/mix', writeLimiter, ctrl.createMixOrder);
