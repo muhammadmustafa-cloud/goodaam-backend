@@ -1,4 +1,4 @@
-const prisma = require('../config/prisma');
+const service = require('../services/gate.service');
 
 // Register truck arrival
 exports.registerTruckArrival = async (req, res, next) => {
@@ -12,22 +12,10 @@ exports.registerTruckArrival = async (req, res, next) => {
       });
     }
 
-    const gateEntry = await prisma.gateEntry.create({
-      data: {
-        truckNumber,
-        driverName: driverName || null,
-        createdById: parseInt(createdById),
-        status: 'PENDING'
-      },
-      include: {
-        createdBy: {
-          select: {
-            id: true,
-            name: true,
-            email: true
-          }
-        }
-      }
+    const gateEntry = await service.registerTruckArrival({
+      truckNumber,
+      driverName,
+      createdById
     });
 
     res.json({ success: true, data: gateEntry });
@@ -47,28 +35,23 @@ exports.recordWeightReading = async (req, res, next) => {
       });
     }
 
-    const gateEntry = await prisma.gateEntry.update({
-      where: { id: parseInt(gateEntryId) },
-      data: {
-        grossWeight: parseFloat(grossWeight),
-        tareWeight: parseFloat(tareWeight),
-        netWeight: parseFloat(netWeight),
-        weightMachineReading: weightMachineReading ? parseFloat(weightMachineReading) : null,
-        status: 'WEIGHED'
-      },
-      include: {
-        createdBy: {
-          select: {
-            id: true,
-            name: true,
-            email: true
-          }
-        }
-      }
+    const gateEntry = await service.recordWeightReading(gateEntryId, {
+      grossWeight,
+      tareWeight,
+      netWeight,
+      weightMachineReading
     });
 
     res.json({ success: true, data: gateEntry });
-  } catch (err) { next(err); }
+  } catch (err) { 
+    if (err.status === 404) {
+      return res.status(404).json({
+        success: false,
+        message: err.message
+      });
+    }
+    next(err); 
+  }
 };
 
 // Generate gatepass with advanced features
@@ -84,65 +67,26 @@ exports.generateGatepass = async (req, res, next) => {
       });
     }
 
-    // Generate professional gatepass number with date
-    const date = new Date();
-    const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
-    const timeStr = date.toTimeString().slice(0, 8).replace(/:/g, '');
-    const gatepassNumber = `GP-${dateStr}-${timeStr}-${Math.random().toString(36).substr(2, 4).toUpperCase()}`;
-
-    const result = await prisma.$transaction(async (tx) => {
-      // Update gate entry with laad and gatepass number
-      const gateEntry = await tx.gateEntry.update({
-        where: { id: parseInt(gateEntryId) },
-        data: {
-          laadId: parseInt(laadId),
-          gatepassNumber,
-          status: 'PROCESSED'
-        },
-        include: {
-          laad: {
-            include: {
-              supplier: true,
-              items: {
-                include: {
-                  item: true
-                }
-              }
-            }
-          },
-          createdBy: {
-            select: {
-              id: true,
-              name: true,
-              email: true
-            }
-          }
-        }
-      });
-
-      // Update laad items with quality grades and parchi numbers
-      for (const item of items) {
-        await tx.laadItem.update({
-          where: { id: item.laadItemId },
-          data: {
-            qualityGrade: item.qualityGrade || null,
-            weightPerBag: item.weightPerBag || null,
-            jacobabadParchiNo: item.jacobabadParchiNo || null,
-            kantyParchiNo: item.kantyParchiNo || null
-          }
-        });
-      }
-
-      return gateEntry;
+    const result = await service.generateGatepass(gateEntryId, {
+      laadId,
+      items
     });
 
     res.json({ 
       success: true, 
       data: result,
-      gatepassNumber,
+      gatepassNumber: result.gatepassNumber,
       message: 'Gatepass generated successfully'
     });
-  } catch (err) { next(err); }
+  } catch (err) { 
+    if (err.status === 404 || err.status === 400) {
+      return res.status(err.status).json({
+        success: false,
+        message: err.message
+      });
+    }
+    next(err); 
+  }
 };
 
 // Get gate entries
@@ -150,41 +94,8 @@ exports.getGateEntries = async (req, res, next) => {
   try {
     const { status, dateFrom, dateTo } = req.query;
     
-    const where = {};
-    
-    if (status) {
-      where.status = status;
-    }
-    
-    if (dateFrom || dateTo) {
-      where.arrivalTime = {};
-      if (dateFrom) where.arrivalTime.gte = new Date(dateFrom);
-      if (dateTo) where.arrivalTime.lte = new Date(dateTo);
-    }
-
-    const entries = await prisma.gateEntry.findMany({
-      where,
-      orderBy: { arrivalTime: 'desc' },
-      include: {
-        createdBy: {
-          select: {
-            id: true,
-            name: true,
-            email: true
-          }
-        },
-        laad: {
-          include: {
-            supplier: true,
-            items: {
-              include: {
-                item: true
-              }
-            }
-          }
-        }
-      }
-    });
+    const filters = { status, dateFrom, dateTo };
+    const entries = await service.getGateEntries(filters);
 
     res.json({ success: true, data: entries });
   } catch (err) { next(err); }
@@ -193,28 +104,7 @@ exports.getGateEntries = async (req, res, next) => {
 // Get gate entry by ID
 exports.getGateEntryById = async (req, res, next) => {
   try {
-    const entry = await prisma.gateEntry.findUnique({
-      where: { id: parseInt(req.params.id) },
-      include: {
-        createdBy: {
-          select: {
-            id: true,
-            name: true,
-            email: true
-          }
-        },
-        laad: {
-          include: {
-            supplier: true,
-            items: {
-              include: {
-                item: true
-              }
-            }
-          }
-        }
-      }
-    });
+    const entry = await service.getGateEntryById(req.params.id);
 
     if (!entry) {
       return res.status(404).json({
@@ -240,40 +130,18 @@ exports.updateGateEntryStatus = async (req, res, next) => {
       });
     }
 
-    const validStatuses = ['PENDING', 'WEIGHED', 'PROCESSED', 'COMPLETED', 'CANCELLED'];
-    if (!validStatuses.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: `Invalid status. Must be one of: ${validStatuses.join(', ')}`
-      });
-    }
-
-    const entry = await prisma.gateEntry.update({
-      where: { id: parseInt(id) },
-      data: { status },
-      include: {
-        createdBy: {
-          select: {
-            id: true,
-            name: true,
-            email: true
-          }
-        },
-        laad: {
-          include: {
-            supplier: true,
-            items: {
-              include: {
-                item: true
-              }
-            }
-          }
-        }
-      }
-    });
+    const entry = await service.updateGateEntryStatus(id, status);
 
     res.json({ success: true, data: entry });
-  } catch (err) { next(err); }
+  } catch (err) { 
+    if (err.status === 400 || err.status === 404) {
+      return res.status(err.status).json({
+        success: false,
+        message: err.message
+      });
+    }
+    next(err); 
+  }
 };
 
 // Complete gate entry (final step)
@@ -282,32 +150,9 @@ exports.completeGateEntry = async (req, res, next) => {
     const { id } = req.params;
     const { notes, finalWeight } = req.body;
 
-    const entry = await prisma.gateEntry.update({
-      where: { id: parseInt(id) },
-      data: { 
-        status: 'COMPLETED',
-        notes: notes || null,
-        netWeight: finalWeight ? parseFloat(finalWeight) : null
-      },
-      include: {
-        createdBy: {
-          select: {
-            id: true,
-            name: true,
-            email: true
-          }
-        },
-        laad: {
-          include: {
-            supplier: true,
-            items: {
-              include: {
-                item: true
-              }
-            }
-          }
-        }
-      }
+    const entry = await service.completeGateEntry(id, {
+      notes,
+      finalWeight
     });
 
     res.json({ 
@@ -315,7 +160,15 @@ exports.completeGateEntry = async (req, res, next) => {
       data: entry,
       message: 'Gate entry completed successfully'
     });
-  } catch (err) { next(err); }
+  } catch (err) { 
+    if (err.status === 404) {
+      return res.status(404).json({
+        success: false,
+        message: err.message
+      });
+    }
+    next(err); 
+  }
 };
 
 // Get gate statistics
@@ -323,47 +176,12 @@ exports.getGateStatistics = async (req, res, next) => {
   try {
     const { dateFrom, dateTo } = req.query;
     
-    const where = {};
-    if (dateFrom || dateTo) {
-      where.arrivalTime = {};
-      if (dateFrom) where.arrivalTime.gte = new Date(dateFrom);
-      if (dateTo) where.arrivalTime.lte = new Date(dateTo);
-    }
-
-    const [
-      totalEntries,
-      pendingEntries,
-      completedEntries,
-      todayEntries,
-      totalWeight
-    ] = await Promise.all([
-      prisma.gateEntry.count({ where }),
-      prisma.gateEntry.count({ where: { ...where, status: 'PENDING' } }),
-      prisma.gateEntry.count({ where: { ...where, status: 'COMPLETED' } }),
-      prisma.gateEntry.count({ 
-        where: { 
-          ...where,
-          arrivalTime: {
-            gte: new Date(new Date().setHours(0, 0, 0, 0))
-          }
-        }
-      }),
-      prisma.gateEntry.aggregate({
-        where: { ...where, netWeight: { not: null } },
-        _sum: { netWeight: true }
-      })
-    ]);
+    const filters = { dateFrom, dateTo };
+    const statistics = await service.getGateStatistics(filters);
 
     res.json({
       success: true,
-      data: {
-        totalEntries,
-        pendingEntries,
-        completedEntries,
-        todayEntries,
-        totalWeight: totalWeight._sum.netWeight || 0,
-        completionRate: totalEntries > 0 ? (completedEntries / totalEntries * 100).toFixed(2) : 0
-      }
+      data: statistics
     });
   } catch (err) { next(err); }
 };
@@ -373,63 +191,20 @@ exports.printGatepass = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const gateEntry = await prisma.gateEntry.findUnique({
-      where: { id: parseInt(id) },
-      include: {
-        createdBy: {
-          select: {
-            id: true,
-            name: true,
-            email: true
-          }
-        },
-        laad: {
-          include: {
-            supplier: true,
-            items: {
-              include: {
-                item: true
-              }
-            }
-          }
-        }
-      }
-    });
-
-    if (!gateEntry) {
-      return res.status(404).json({
-        success: false,
-        message: 'Gate entry not found'
-      });
-    }
-
-    if (!gateEntry.gatepassNumber) {
-      return res.status(400).json({
-        success: false,
-        message: 'Gatepass not generated yet'
-      });
-    }
-
-    // Generate print-ready gatepass data
-    const gatepassData = {
-      gatepassNumber: gateEntry.gatepassNumber,
-      truckNumber: gateEntry.truckNumber,
-      driverName: gateEntry.driverName,
-      arrivalTime: gateEntry.arrivalTime,
-      grossWeight: gateEntry.grossWeight,
-      tareWeight: gateEntry.tareWeight,
-      netWeight: gateEntry.netWeight,
-      supplier: gateEntry.laad?.supplier,
-      items: gateEntry.laad?.items || [],
-      createdBy: gateEntry.createdBy,
-      status: gateEntry.status,
-      printTime: new Date().toISOString()
-    };
+    const gatepassData = await service.printGatepass(id);
 
     res.json({
       success: true,
       data: gatepassData,
       message: 'Gatepass ready for printing'
     });
-  } catch (err) { next(err); }
+  } catch (err) { 
+    if (err.status === 404 || err.status === 400) {
+      return res.status(err.status).json({
+        success: false,
+        message: err.message
+      });
+    }
+    next(err); 
+  }
 };

@@ -3,6 +3,7 @@ const ctrl = require('../controllers/sale.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 const { writeLimiter } = require('../middleware/rateLimiter.middleware');
 const { validateSale } = require('../middleware/security.middleware');
+const { validateObjectId } = require('../middleware/validateId.middleware');
 
 const router = express.Router();
 
@@ -12,7 +13,7 @@ router.use(authenticate);
 // Regular sales
 router.post('/', writeLimiter, validateSale, ctrl.createSale);
 router.get('/', ctrl.getSales);
-router.get('/:id', ctrl.getSaleById);
+router.get('/:id', validateObjectId, ctrl.getSaleById);
 
 // Mix orders
 router.post('/mix', writeLimiter, ctrl.createMixOrder);

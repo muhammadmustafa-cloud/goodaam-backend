@@ -4,6 +4,9 @@ const helmet = require('helmet');
 const compression = require('compression');
 require('dotenv').config();  // Load environment variables
 
+// Import MongoDB connection
+const { connectDB } = require('./src/config/mongodb');
+
 // Import routes
 const itemRoutes = require('./src/routes/item.routes');
 const laadRoutes = require('./src/routes/laad.routes');
@@ -15,7 +18,7 @@ const gateRoutes = require('./src/routes/gate.routes');
 const financialRoutes = require('./src/routes/financial.routes');
 const vehicleRoutes = require('./src/routes/vehicle.routes');
 const reportsRoutes = require('./src/routes/reports.routes');
-const migrationRoutes = require('./src/routes/migration.routes');
+// Migration routes removed - MongoDB doesn't need SQL migrations (schema is in Mongoose models)
 
 // Import middleware
 const logger = require('./src/config/logger');
@@ -111,7 +114,7 @@ app.use('/api/gate', gateRoutes);
 app.use('/api/financial', financialRoutes);
 app.use('/api/vehicles', vehicleRoutes);
 app.use('/api/reports', reportsRoutes);
-app.use('/api/migrations', migrationRoutes);
+// Migration routes removed - MongoDB doesn't need SQL migrations
 
 
 // Health check
@@ -144,10 +147,24 @@ app.use(errorHandler);
 
 const PORT = process.env.PORT || 8000;
 
-app.listen(PORT, () => {
-  logger.info(`🚀 Server running on port ${PORT}`);
-  logger.info(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-  logger.info(`🌐 Health check: http://localhost:${PORT}/health`);
-});
+// Connect to MongoDB and start server
+const startServer = async () => {
+  try {
+    // Connect to MongoDB
+    await connectDB();
+    
+    // Start server
+    app.listen(PORT, () => {
+      logger.info(`🚀 Server running on port ${PORT}`);
+      logger.info(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+      logger.info(`🌐 Health check: http://localhost:${PORT}/health`);
+    });
+  } catch (error) {
+    logger.error('Failed to start server:', error);
+    process.exit(1);
+  }
+};
+
+startServer();
 
 module.exports = app;

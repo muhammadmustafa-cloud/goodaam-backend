@@ -1,27 +1,12 @@
-const prisma = require('../config/prisma');
+const service = require('../services/vehicle.service');
 
 // Get all vehicles
 exports.getVehicles = async (req, res, next) => {
   try {
     const { isActive, type } = req.query;
     
-    const where = {};
-    if (isActive !== undefined) {
-      where.isActive = isActive === 'true';
-    }
-    if (type) {
-      where.type = type;
-    }
-
-    const vehicles = await prisma.vehicle.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      include: {
-        _count: {
-          select: { laads: true }
-        }
-      }
-    });
+    const filters = { isActive, type };
+    const vehicles = await service.getVehicles(filters);
 
     res.json({ success: true, data: vehicles });
   } catch (err) { next(err); }
@@ -30,18 +15,7 @@ exports.getVehicles = async (req, res, next) => {
 // Get vehicle by ID
 exports.getVehicleById = async (req, res, next) => {
   try {
-    const vehicle = await prisma.vehicle.findUnique({
-      where: { id: parseInt(req.params.id) },
-      include: {
-        laads: {
-          include: {
-            supplier: true
-          },
-          orderBy: { arrivalDate: 'desc' },
-          take: 10
-        }
-      }
-    });
+    const vehicle = await service.getVehicleById(req.params.id);
 
     if (!vehicle) {
       return res.status(404).json({
@@ -66,31 +40,25 @@ exports.createVehicle = async (req, res, next) => {
       });
     }
 
-    // Check if vehicle number already exists
-    const existing = await prisma.vehicle.findUnique({
-      where: { number }
-    });
-
-    if (existing) {
-      return res.status(400).json({
-        success: false,
-        message: 'Vehicle with this number already exists'
-      });
-    }
-
-    const vehicle = await prisma.vehicle.create({
-      data: {
-        number: number.toUpperCase(),
-        type,
-        capacity: capacity ? parseFloat(capacity) : null,
-        ownerName: ownerName || null,
-        ownerContact: ownerContact || null,
-        isActive: isActive !== undefined ? isActive : true
-      }
+    const vehicle = await service.createVehicle({
+      number,
+      type,
+      capacity,
+      ownerName,
+      ownerContact,
+      isActive: isActive !== undefined ? isActive : true
     });
 
     res.status(201).json({ success: true, data: vehicle });
-  } catch (err) { next(err); }
+  } catch (err) { 
+    if (err.status === 400) {
+      return res.status(400).json({
+        success: false,
+        message: err.message
+      });
+    }
+    next(err); 
+  }
 };
 
 // Update vehicle
@@ -99,46 +67,32 @@ exports.updateVehicle = async (req, res, next) => {
     const { id } = req.params;
     const { number, type, capacity, ownerName, ownerContact, isActive } = req.body;
 
-    // Check if vehicle exists
-    const existing = await prisma.vehicle.findUnique({
-      where: { id: parseInt(id) }
+    const vehicle = await service.updateVehicle(id, {
+      number,
+      type,
+      capacity,
+      ownerName,
+      ownerContact,
+      isActive
     });
 
-    if (!existing) {
+    if (!vehicle) {
       return res.status(404).json({
         success: false,
         message: 'Vehicle not found'
       });
     }
 
-    // If updating number, check for duplicates
-    if (number && number !== existing.number) {
-      const duplicate = await prisma.vehicle.findUnique({
-        where: { number: number.toUpperCase() }
-      });
-
-      if (duplicate) {
-        return res.status(400).json({
-          success: false,
-          message: 'Vehicle with this number already exists'
-        });
-      }
-    }
-
-    const vehicle = await prisma.vehicle.update({
-      where: { id: parseInt(id) },
-      data: {
-        number: number ? number.toUpperCase() : undefined,
-        type: type || undefined,
-        capacity: capacity !== undefined ? (capacity ? parseFloat(capacity) : null) : undefined,
-        ownerName: ownerName !== undefined ? ownerName : undefined,
-        ownerContact: ownerContact !== undefined ? ownerContact : undefined,
-        isActive: isActive !== undefined ? isActive : undefined
-      }
-    });
-
     res.json({ success: true, data: vehicle });
-  } catch (err) { next(err); }
+  } catch (err) { 
+    if (err.status === 400 || err.status === 404) {
+      return res.status(err.status).json({
+        success: false,
+        message: err.message
+      });
+    }
+    next(err); 
+  }
 };
 
 // Delete vehicle
@@ -146,40 +100,28 @@ exports.deleteVehicle = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    // Check if vehicle exists
-    const vehicle = await prisma.vehicle.findUnique({
-      where: { id: parseInt(id) },
-      include: {
-        _count: {
-          select: { laads: true }
-        }
-      }
-    });
+    const result = await service.deleteVehicle(id);
 
-    if (!vehicle) {
+    if (!result) {
       return res.status(404).json({
         success: false,
         message: 'Vehicle not found'
       });
     }
 
-    // Prevent deletion if vehicle has laads
-    if (vehicle._count.laads > 0) {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot delete vehicle. It has ${vehicle._count.laads} associated laads. Consider deactivating instead.`
-      });
-    }
-
-    await prisma.vehicle.delete({
-      where: { id: parseInt(id) }
-    });
-
     res.json({ 
       success: true, 
       message: 'Vehicle deleted successfully' 
     });
-  } catch (err) { next(err); }
+  } catch (err) { 
+    if (err.status === 400 || err.status === 404) {
+      return res.status(err.status).json({
+        success: false,
+        message: err.message
+      });
+    }
+    next(err); 
+  }
 };
 
 // Toggle vehicle active status
@@ -187,9 +129,7 @@ exports.toggleVehicleStatus = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const vehicle = await prisma.vehicle.findUnique({
-      where: { id: parseInt(id) }
-    });
+    const vehicle = await service.toggleVehicleStatus(id);
 
     if (!vehicle) {
       return res.status(404).json({
@@ -198,18 +138,18 @@ exports.toggleVehicleStatus = async (req, res, next) => {
       });
     }
 
-    const updated = await prisma.vehicle.update({
-      where: { id: parseInt(id) },
-      data: {
-        isActive: !vehicle.isActive
-      }
-    });
-
     res.json({ 
       success: true, 
-      data: updated,
-      message: `Vehicle ${updated.isActive ? 'activated' : 'deactivated'} successfully` 
+      data: vehicle,
+      message: `Vehicle ${vehicle.isActive ? 'activated' : 'deactivated'} successfully` 
     });
-  } catch (err) { next(err); }
+  } catch (err) { 
+    if (err.status === 404) {
+      return res.status(404).json({
+        success: false,
+        message: err.message
+      });
+    }
+    next(err); 
+  }
 };
-

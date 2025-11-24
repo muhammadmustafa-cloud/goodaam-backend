@@ -1,4 +1,9 @@
-const prisma = require('../config/prisma');
+const Customer = require('../models/Customer');
+const Supplier = require('../models/Supplier');
+const Sale = require('../models/Sale');
+const Laad = require('../models/Laad');
+const LaadItem = require('../models/LaadItem');
+const Item = require('../models/Item');
 
 /**
  * Customer Ledger - Shows all transactions and outstanding balance (Baqaya)
@@ -9,9 +14,7 @@ exports.getCustomerLedger = async (req, res) => {
     const { startDate, endDate } = req.query;
 
     // Get customer info
-    const customer = await prisma.customer.findUnique({
-      where: { id: parseInt(customerId) },
-    });
+    const customer = await Customer.findById(customerId);
 
     if (!customer) {
       return res.status(404).json({
@@ -22,31 +25,35 @@ exports.getCustomerLedger = async (req, res) => {
 
     // Build date filter
     const dateFilter = {};
-    if (startDate) dateFilter.gte = new Date(startDate);
-    if (endDate) dateFilter.lte = new Date(endDate);
+    if (startDate || endDate) {
+      dateFilter.createdAt = {};
+      if (startDate) dateFilter.createdAt.$gte = new Date(startDate);
+      if (endDate) dateFilter.createdAt.$lte = new Date(endDate);
+    }
 
     // Get all sales for this customer
-    const sales = await prisma.sale.findMany({
-      where: {
-        customerId: parseInt(customerId),
-        ...(Object.keys(dateFilter).length > 0 && { createdAt: dateFilter }),
-      },
-      include: {
-        laadItem: {
-          include: {
-            item: true,
-            laad: {
-              include: {
-                supplier: true,
-              },
-            },
+    const sales = await Sale.find({
+      customerId,
+      ...dateFilter
+    })
+      .populate({
+        path: 'laadItemId',
+        populate: [
+          {
+            path: 'itemId',
+            model: 'Item'
           },
-        },
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
+          {
+            path: 'laadId',
+            populate: {
+              path: 'supplierId',
+              model: 'Supplier'
+            }
+          }
+        ]
+      })
+      .sort({ createdAt: -1 })
+      .lean();
 
     // Calculate totals
     const totalBagsSold = sales.reduce((sum, sale) => sum + (sale.bagsSold || 0), 0);
@@ -56,14 +63,18 @@ exports.getCustomerLedger = async (req, res) => {
     }, 0);
 
     // For demo: assuming 30% is paid, 70% is Baqaya (outstanding)
-    // In real system, you'd track payments separately
     const estimatedPaid = (parseFloat(totalAmount) || 0) * 0.3;
     const baqaya = (parseFloat(totalAmount) || 0) - estimatedPaid;
 
     return res.json({
       success: true,
       data: {
-        customer,
+        customer: {
+          id: customer._id,
+          name: customer.name,
+          contact: customer.contact,
+          address: customer.address
+        },
         summary: {
           totalSales: sales.length,
           totalBagsSold,
@@ -72,11 +83,11 @@ exports.getCustomerLedger = async (req, res) => {
           baqaya: parseFloat((baqaya || 0).toFixed(2)),
         },
         transactions: sales.map(sale => ({
-          id: sale.id,
+          id: sale._id,
           date: sale.createdAt,
-          item: sale.laadItem.item.name,
-          quality: sale.qualityGrade || sale.laadItem.qualityGrade,
-          laadNumber: sale.laadItem.laad.laadNumber,
+          item: sale.laadItemId?.itemId?.name || 'Unknown',
+          quality: sale.qualityGrade || sale.laadItemId?.qualityGrade || 'N/A',
+          laadNumber: sale.laadItemId?.laadId?.laadNumber || sale.laadNumber || 'N/A',
           bagsSold: sale.bagsSold,
           ratePerBag: parseFloat(sale.ratePerBag) || 0,
           totalAmount: parseFloat(sale.totalAmount) || sale.bagsSold * (parseFloat(sale.ratePerBag) || 0),
@@ -102,9 +113,7 @@ exports.getSupplierLedger = async (req, res) => {
     const { startDate, endDate } = req.query;
 
     // Get supplier info
-    const supplier = await prisma.supplier.findUnique({
-      where: { id: parseInt(supplierId) },
-    });
+    const supplier = await Supplier.findById(supplierId);
 
     if (!supplier) {
       return res.status(404).json({
@@ -115,36 +124,39 @@ exports.getSupplierLedger = async (req, res) => {
 
     // Build date filter
     const dateFilter = {};
-    if (startDate) dateFilter.gte = new Date(startDate);
-    if (endDate) dateFilter.lte = new Date(endDate);
+    if (startDate || endDate) {
+      dateFilter.arrivalDate = {};
+      if (startDate) dateFilter.arrivalDate.$gte = new Date(startDate);
+      if (endDate) dateFilter.arrivalDate.$lte = new Date(endDate);
+    }
 
     // Get all laads from this supplier
-    const laads = await prisma.laad.findMany({
-      where: {
-        supplierId: parseInt(supplierId),
-        ...(Object.keys(dateFilter).length > 0 && { arrivalDate: dateFilter }),
-      },
-      include: {
-        vehicle: true,
-        items: {
-          include: {
-            item: true,
-          },
-        },
-      },
-      orderBy: {
-        arrivalDate: 'desc',
-      },
-    });
+    const laads = await Laad.find({
+      supplierId,
+      ...dateFilter
+    })
+      .populate('vehicleId')
+      .sort({ arrivalDate: -1 })
+      .lean();
+
+    // Get items for each laad
+    const laadsWithItems = await Promise.all(
+      laads.map(async (laad) => {
+        const items = await LaadItem.find({ laadId: laad._id })
+          .populate('itemId')
+          .lean();
+        return { ...laad, items };
+      })
+    );
 
     // Calculate totals
-    const totalLaads = laads.length;
-    const totalBagsPurchased = laads.reduce((sum, laad) => {
-      return sum + laad.items.reduce((itemSum, item) => itemSum + item.totalBags, 0);
+    const totalLaads = laadsWithItems.length;
+    const totalBagsPurchased = laadsWithItems.reduce((sum, laad) => {
+      return sum + (laad.items || []).reduce((itemSum, item) => itemSum + (item.totalBags || 0), 0);
     }, 0);
 
-    const totalAmount = laads.reduce((sum, laad) => {
-      return sum + laad.items.reduce((itemSum, item) => {
+    const totalAmount = laadsWithItems.reduce((sum, laad) => {
+      return sum + (laad.items || []).reduce((itemSum, item) => {
         const amount = parseFloat(item.totalAmount) || 0;
         return itemSum + amount;
       }, 0);
@@ -153,24 +165,29 @@ exports.getSupplierLedger = async (req, res) => {
     return res.json({
       success: true,
       data: {
-        supplier,
+        supplier: {
+          id: supplier._id,
+          name: supplier.name,
+          contact: supplier.contact,
+          address: supplier.address
+        },
         summary: {
           totalLaads,
           totalBagsPurchased,
           totalAmount: parseFloat((totalAmount || 0).toFixed(2)),
         },
-        transactions: laads.map(laad => {
+        transactions: laadsWithItems.map(laad => {
           const laadItems = Array.isArray(laad.items) ? laad.items : [];
           return {
-            id: laad.id,
+            id: laad._id,
             laadNumber: laad.laadNumber,
             arrivalDate: laad.arrivalDate,
-            vehicle: laad.vehicle?.number || laad.vehicleNumber,
+            vehicle: laad.vehicleId?.number || laad.vehicleNumber,
             itemsCount: laadItems.length,
             totalBags: laadItems.reduce((sum, item) => sum + (item.totalBags || 0), 0),
             totalAmount: laadItems.reduce((sum, item) => sum + (parseFloat(item.totalAmount) || 0), 0),
             items: laadItems.map(item => ({
-              name: item.item?.name || 'Unknown',
+              name: item.itemId?.name || 'Unknown',
               quality: item.qualityGrade || 'N/A',
               bags: item.totalBags || 0,
               ratePerBag: parseFloat(item.ratePerBag) || 0,
@@ -205,27 +222,31 @@ exports.getDailySalesReport = async (req, res) => {
     endOfDay.setHours(23, 59, 59, 999);
 
     // Get all sales for the day
-    const sales = await prisma.sale.findMany({
-      where: {
-        createdAt: {
-          gte: startOfDay,
-          lte: endOfDay,
-        },
+    const sales = await Sale.find({
+      createdAt: {
+        $gte: startOfDay,
+        $lte: endOfDay,
       },
-      include: {
-        customer: true,
-        laadItem: {
-          include: {
-            item: true,
-            laad: true,
+    })
+      .populate('customerId')
+      .populate({
+        path: 'laadItemId',
+        populate: [
+          {
+            path: 'itemId',
+            model: 'Item'
           },
-        },
-      },
-    });
+          {
+            path: 'laadId',
+            model: 'Laad'
+          }
+        ]
+      })
+      .lean();
 
     // Calculate summary
     const totalSales = sales.length;
-    const totalBagsSold = sales.reduce((sum, sale) => sum + sale.bagsSold, 0);
+    const totalBagsSold = sales.reduce((sum, sale) => sum + (sale.bagsSold || 0), 0);
     const totalRevenue = sales.reduce((sum, sale) => {
       const amount = parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0));
       return sum + amount;
@@ -234,10 +255,10 @@ exports.getDailySalesReport = async (req, res) => {
     // Group by customer
     const salesByCustomer = {};
     sales.forEach(sale => {
-      const customerId = sale.customer.id;
+      const customerId = sale.customerId?._id?.toString() || 'unknown';
       if (!salesByCustomer[customerId]) {
         salesByCustomer[customerId] = {
-          customer: sale.customer.name,
+          customer: sale.customerId?.name || 'Unknown',
           sales: 0,
           bags: 0,
           amount: 0,
@@ -261,11 +282,11 @@ exports.getDailySalesReport = async (req, res) => {
         },
         salesByCustomer: Object.values(salesByCustomer),
         transactions: sales.map(sale => ({
-          id: sale.id,
+          id: sale._id,
           time: sale.createdAt,
-          customer: sale.customer.name,
-          item: sale.laadItem.item.name,
-          quality: sale.qualityGrade || sale.laadItem.qualityGrade,
+          customer: sale.customerId?.name || 'Unknown',
+          item: sale.laadItemId?.itemId?.name || 'Unknown',
+          quality: sale.qualityGrade || sale.laadItemId?.qualityGrade || 'N/A',
           bags: sale.bagsSold,
           rate: parseFloat(sale.ratePerBag) || 0,
           amount: parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0)),
@@ -294,69 +315,92 @@ exports.getStockMovement = async (req, res) => {
     const saleFilter = {};
 
     if (startDate) {
-      laadFilter.arrivalDate = { gte: new Date(startDate) };
-      saleFilter.createdAt = { gte: new Date(startDate) };
+      laadFilter.arrivalDate = { $gte: new Date(startDate) };
+      saleFilter.createdAt = { $gte: new Date(startDate) };
     }
     if (endDate) {
-      laadFilter.arrivalDate = { ...laadFilter.arrivalDate, lte: new Date(endDate) };
-      saleFilter.createdAt = { ...saleFilter.createdAt, lte: new Date(endDate) };
-    }
-    if (itemId) {
-      laadFilter.items = { some: { itemId: parseInt(itemId) } };
-      saleFilter.laadItem = { itemId: parseInt(itemId) };
+      if (laadFilter.arrivalDate) {
+        laadFilter.arrivalDate.$lte = new Date(endDate);
+      } else {
+        laadFilter.arrivalDate = { $lte: new Date(endDate) };
+      }
+      if (saleFilter.createdAt) {
+        saleFilter.createdAt.$lte = new Date(endDate);
+      } else {
+        saleFilter.createdAt = { $lte: new Date(endDate) };
+      }
     }
 
     // Get incoming stock (laads)
-    const laads = await prisma.laad.findMany({
-      where: laadFilter,
-      include: {
-        supplier: true,
-        items: {
-          where: itemId ? { itemId: parseInt(itemId) } : {},
-          include: {
-            item: true,
-          },
-        },
-      },
-      orderBy: {
-        arrivalDate: 'desc',
-      },
-    });
+    const laads = await Laad.find(laadFilter)
+      .populate('supplierId')
+      .sort({ arrivalDate: -1 })
+      .lean();
+
+    // Get laad items
+    const laadsWithItems = await Promise.all(
+      laads.map(async (laad) => {
+        const itemFilter = { laadId: laad._id };
+        if (itemId) itemFilter.itemId = itemId;
+        
+        const items = await LaadItem.find(itemFilter)
+          .populate('itemId')
+          .lean();
+        return { ...laad, items };
+      })
+    );
+
+    // Filter laads that have items (if itemId filter)
+    const filteredLaads = itemId 
+      ? laadsWithItems.filter(laad => laad.items && laad.items.length > 0)
+      : laadsWithItems;
 
     // Get outgoing stock (sales)
-    const sales = await prisma.sale.findMany({
-      where: saleFilter,
-      include: {
-        customer: true,
-        laadItem: {
-          include: {
-            item: true,
-            laad: true,
+    const saleItemFilter = {};
+    if (itemId) {
+      // Find sales where laadItem has this itemId
+      const laadItems = await LaadItem.find({ itemId }).select('_id').lean();
+      const laadItemIds = laadItems.map(li => li._id);
+      saleFilter.laadItemId = { $in: laadItemIds };
+    }
+
+    const sales = await Sale.find(saleFilter)
+      .populate('customerId')
+      .populate({
+        path: 'laadItemId',
+        populate: [
+          {
+            path: 'itemId',
+            model: 'Item'
           },
-        },
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-    });
+          {
+            path: 'laadId',
+            model: 'Laad'
+          }
+        ]
+      })
+      .sort({ createdAt: -1 })
+      .lean();
 
     // Combine and sort by date
     const movements = [];
 
-    laads.forEach(laad => {
-      laad.items.forEach(item => {
-        movements.push({
-          type: 'IN',
-          date: laad.arrivalDate,
-          reference: laad.laadNumber,
-          laadNumber: laad.laadNumber,
-          party: laad.supplier.name,
-          item: item.item.name,
-          quality: item.qualityGrade || item.item.quality,
-          bags: item.totalBags,
-          rate: parseFloat(item.ratePerBag) || 0,
-          amount: parseFloat(item.totalAmount) || 0,
-        });
+    filteredLaads.forEach(laad => {
+      (laad.items || []).forEach(item => {
+        if (!itemId || item.itemId?._id?.toString() === itemId) {
+          movements.push({
+            type: 'IN',
+            date: laad.arrivalDate,
+            reference: laad.laadNumber,
+            laadNumber: laad.laadNumber,
+            party: laad.supplierId?.name || 'Unknown',
+            item: item.itemId?.name || 'Unknown',
+            quality: item.qualityGrade || item.itemId?.quality || 'N/A',
+            bags: item.totalBags || 0,
+            rate: parseFloat(item.ratePerBag) || 0,
+            amount: parseFloat(item.totalAmount) || 0,
+          });
+        }
       });
     });
 
@@ -364,11 +408,11 @@ exports.getStockMovement = async (req, res) => {
       movements.push({
         type: 'OUT',
         date: sale.date || sale.createdAt,
-        reference: `SALE-${sale.id}`,
-        laadNumber: sale.laadNumber || sale.laadItem.laad.laadNumber,
-        party: sale.customer.name,
-        item: sale.laadItem.item.name,
-        quality: sale.qualityGrade || sale.laadItem.qualityGrade || sale.laadItem.item.quality,
+        reference: `SALE-${sale._id}`,
+        laadNumber: sale.laadNumber || sale.laadItemId?.laadId?.laadNumber || 'N/A',
+        party: sale.customerId?.name || 'Unknown',
+        item: sale.laadItemId?.itemId?.name || 'Unknown',
+        quality: sale.qualityGrade || sale.laadItemId?.qualityGrade || sale.laadItemId?.itemId?.quality || 'N/A',
         bags: sale.bagsSold,
         rate: parseFloat(sale.ratePerBag) || 0,
         amount: parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0)),
@@ -408,40 +452,34 @@ exports.getStockMovement = async (req, res) => {
  */
 exports.getAllCustomersLedger = async (req, res) => {
   try {
-    const customers = await prisma.customer.findMany({
-      include: {
-        sales: {
-          select: {
-            bagsSold: true,
-            totalAmount: true,
-            ratePerBag: true,
-          },
-        },
-      },
-    });
+    const customers = await Customer.find().lean();
 
-    const ledgerData = customers.map(customer => {
-      const totalSales = customer.sales.length;
-      const totalBags = customer.sales.reduce((sum, sale) => sum + sale.bagsSold, 0);
-      const totalAmount = customer.sales.reduce((sum, sale) => {
-        const amount = parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0));
-        return sum + amount;
-      }, 0);
+    const ledgerData = await Promise.all(
+      customers.map(async (customer) => {
+        const sales = await Sale.find({ customerId: customer._id }).lean();
 
-      // Estimated Baqaya (70% of total)
-      const baqaya = totalAmount * 0.7;
+        const totalSales = sales.length;
+        const totalBags = sales.reduce((sum, sale) => sum + (sale.bagsSold || 0), 0);
+        const totalAmount = sales.reduce((sum, sale) => {
+          const amount = parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0));
+          return sum + amount;
+        }, 0);
 
-      return {
-        id: customer.id,
-        name: customer.name,
-        contact: customer.contact,
-        address: customer.address,
-        totalSales,
-        totalBags,
-        totalAmount: parseFloat((totalAmount || 0).toFixed(2)),
-        baqaya: parseFloat((baqaya || 0).toFixed(2)),
-      };
-    });
+        // Estimated Baqaya (70% of total)
+        const baqaya = totalAmount * 0.7;
+
+        return {
+          id: customer._id,
+          name: customer.name,
+          contact: customer.contact,
+          address: customer.address,
+          totalSales,
+          totalBags,
+          totalAmount: parseFloat((totalAmount || 0).toFixed(2)),
+          baqaya: parseFloat((baqaya || 0).toFixed(2)),
+        };
+      })
+    );
 
     return res.json({
       success: true,
@@ -461,37 +499,40 @@ exports.getAllCustomersLedger = async (req, res) => {
  */
 exports.getAllSuppliersLedger = async (req, res) => {
   try {
-    const suppliers = await prisma.supplier.findMany({
-      include: {
-        laads: {
-          include: {
-            items: true,
-          },
-        },
-      },
-    });
+    const suppliers = await Supplier.find().lean();
 
-    const ledgerData = suppliers.map(supplier => {
-      const totalLaads = supplier.laads.length;
-      const totalBags = supplier.laads.reduce((sum, laad) => {
-        return sum + laad.items.reduce((itemSum, item) => itemSum + item.totalBags, 0);
-      }, 0);
-      const totalAmount = supplier.laads.reduce((sum, laad) => {
-        return sum + laad.items.reduce((itemSum, item) => {
-          return itemSum + (parseFloat(item.totalAmount) || 0);
+    const ledgerData = await Promise.all(
+      suppliers.map(async (supplier) => {
+        const laads = await Laad.find({ supplierId: supplier._id }).lean();
+
+        const laadsWithItems = await Promise.all(
+          laads.map(async (laad) => {
+            const items = await LaadItem.find({ laadId: laad._id }).lean();
+            return { ...laad, items };
+          })
+        );
+
+        const totalLaads = laadsWithItems.length;
+        const totalBags = laadsWithItems.reduce((sum, laad) => {
+          return sum + (laad.items || []).reduce((itemSum, item) => itemSum + (item.totalBags || 0), 0);
         }, 0);
-      }, 0);
+        const totalAmount = laadsWithItems.reduce((sum, laad) => {
+          return sum + (laad.items || []).reduce((itemSum, item) => {
+            return itemSum + (parseFloat(item.totalAmount) || 0);
+          }, 0);
+        }, 0);
 
-      return {
-        id: supplier.id,
-        name: supplier.name,
-        contact: supplier.contact,
-        address: supplier.address,
-        totalLaads,
-        totalBags,
-        totalAmount: parseFloat((totalAmount || 0).toFixed(2)),
-      };
-    });
+        return {
+          id: supplier._id,
+          name: supplier.name,
+          contact: supplier.contact,
+          address: supplier.address,
+          totalLaads,
+          totalBags,
+          totalAmount: parseFloat((totalAmount || 0).toFixed(2)),
+        };
+      })
+    );
 
     return res.json({
       success: true,
@@ -505,5 +546,3 @@ exports.getAllSuppliersLedger = async (req, res) => {
     });
   }
 };
-
-

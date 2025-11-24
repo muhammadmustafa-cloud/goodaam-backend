@@ -140,8 +140,8 @@ const validateItem = validate([
 const validateLaad = validate([
   body('laadNumber')
     .trim()
-    .isLength({ min: 3, max: 50 })
-    .withMessage('Laad number must be between 3 and 50 characters'),
+    .isLength({ min: 1, max: 50 })
+    .withMessage('Laad number must be between 1 and 50 characters'),
   body('supplierId')
     .isInt({ min: 1 })
     .withMessage('Valid supplier ID is required'),
@@ -170,8 +170,9 @@ const validateSale = validate([
     .isInt({ min: 1 })
     .withMessage('Bags sold must be a positive integer'),
   body('ratePerBag')
-    .isNumeric()
-    .withMessage('Rate per bag must be a number')
+    .optional({ nullable: true, checkFalsy: true })
+    .isFloat({ min: 0 })
+    .withMessage('Rate per bag must be a positive number if provided')
 ]);
 
 module.exports = {

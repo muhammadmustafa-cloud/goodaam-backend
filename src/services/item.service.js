@@ -1,42 +1,45 @@
-const prisma = require('../config/prisma');
+const Item = require('../models/Item');
+const LaadItem = require('../models/LaadItem');
 
 exports.createItem = async (payload) => {
   // expecting { name, quality, bagWeight }
-  return prisma.item.create({ data: payload });
+  const item = new Item(payload);
+  return await item.save();
 };
 
 exports.getItems = async () => {
-  return prisma.item.findMany({ orderBy: { name: 'asc' } });
+  return await Item.find().sort({ name: 1 });
 };
 
 exports.getItemStockSummary = async () => {
-  const stockRows = await prisma.laadItem.groupBy({
-    by: ['itemId'],
-    _sum: {
-      totalBags: true,
-      remainingBags: true,
-    },
-  });
+  // MongoDB aggregation to group by itemId
+  const stockRows = await LaadItem.aggregate([
+    {
+      $group: {
+        _id: '$itemId',
+        totalBags: { $sum: '$totalBags' },
+        remainingBags: { $sum: '$remainingBags' }
+      }
+    }
+  ]);
 
   if (stockRows.length === 0) return [];
 
-  const itemIds = stockRows.map((row) => row.itemId);
-  const items = await prisma.item.findMany({
-    where: { id: { in: itemIds } },
-  });
+  const itemIds = stockRows.map((row) => row._id);
+  const items = await Item.find({ _id: { $in: itemIds } });
 
   const itemMap = items.reduce((acc, item) => {
-    acc[item.id] = item;
+    acc[item._id.toString()] = item;
     return acc;
   }, {});
 
   return stockRows.map((row) => {
-    const item = itemMap[row.itemId] || {};
-    const totalBags = row._sum.totalBags || 0;
-    const remainingBags = row._sum.remainingBags || 0;
+    const item = itemMap[row._id.toString()] || {};
+    const totalBags = row.totalBags || 0;
+    const remainingBags = row.remainingBags || 0;
 
     return {
-      itemId: row.itemId,
+      itemId: row._id,
       itemName: item.name || 'Unknown Item',
       quality: item.quality || null,
       bagWeight: item.bagWeight || null,

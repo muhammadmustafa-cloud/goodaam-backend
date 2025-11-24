@@ -16,7 +16,13 @@ exports.getLaads = async (req, res, next) => {
 
 exports.getLaadById = async (req, res, next) => {
   try {
-    const row = await svc.getLaadById(+req.params.id);
+    const row = await svc.getLaadById(req.params.id);
+    if (!row) {
+      return res.status(404).json({
+        success: false,
+        message: 'Laad not found'
+      });
+    }
     res.json({ success: true, data: row });
   } catch (err) { next(err); }
 };

@@ -147,7 +147,7 @@ const laadValidation = {
     body('laadNumber')
       .trim()
       .notEmpty().withMessage('Laad number is required')
-      .isLength({ min: 2, max: 50 }).withMessage('Laad number must be between 2 and 50 characters'),
+      .isLength({ min: 1, max: 50 }).withMessage('Laad number must be between 1 and 50 characters'),
     body('supplierId')
       .isInt({ min: 1 }).withMessage('Valid supplier ID is required'),
     body('arrivalDate')
@@ -180,9 +180,6 @@ const saleValidation = {
       .isInt({ min: 1 }).withMessage('Valid laad item ID is required'),
     body('bagsSold')
       .isInt({ min: 1 }).withMessage('Bags sold must be at least 1'),
-    body('ratePerBag')
-      .optional()
-      .isFloat({ min: 0 }).withMessage('Rate per bag must be positive'),
     validate
   ],
   createMix: [

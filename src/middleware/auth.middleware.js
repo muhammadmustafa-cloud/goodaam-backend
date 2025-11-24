@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const prisma = require('../config/prisma');
+const User = require('../models/User');
 const logger = require('../config/logger');
 
 /**
@@ -31,15 +31,7 @@ const authenticate = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-in-production');
 
     // Get user from database
-    const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true
-      }
-    });
+    const user = await User.findById(decoded.userId).select('_id name email role');
 
     if (!user) {
       return res.status(401).json({
@@ -48,8 +40,13 @@ const authenticate = async (req, res, next) => {
       });
     }
 
-    // Attach user to request
-    req.user = user;
+    // Attach user to request (convert _id to id for consistency)
+    req.user = {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role
+    };
     next();
   } catch (error) {
     if (error.name === 'JsonWebTokenError') {
@@ -107,18 +104,15 @@ const optionalAuth = async (req, res, next) => {
       const token = authHeader.substring(7);
       const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key-change-in-production');
       
-      const user = await prisma.user.findUnique({
-        where: { id: decoded.userId },
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          role: true
-        }
-      });
+      const user = await User.findById(decoded.userId).select('_id name email role');
 
       if (user) {
-        req.user = user;
+        req.user = {
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          role: user.role
+        };
       }
     }
     

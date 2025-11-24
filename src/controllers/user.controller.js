@@ -1,4 +1,4 @@
-const prisma = require('../config/prisma');
+const User = require('../models/User');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const logger = require('../config/logger');
@@ -9,7 +9,7 @@ exports.createUser = async (req, res, next) => {
     const { name, email, password, role = 'ADMIN' } = req.body;
 
     // Check if any user already exists
-    const existingUser = await prisma.user.findFirst();
+    const existingUser = await User.findOne();
     
     if (existingUser) {
       return res.status(400).json({
@@ -21,24 +21,28 @@ exports.createUser = async (req, res, next) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const user = await prisma.user.create({
-      data: {
-        name,
-        email,
-        password: hashedPassword,
-        role
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        createdAt: true
-      }
+    const user = new User({
+      name,
+      email,
+      password: hashedPassword,
+      role
     });
 
-    res.json({ success: true, data: user });
-  } catch (err) { next(err); }
+    await user.save();
+
+    // Return user without password
+    const userResponse = {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      createdAt: user.createdAt
+    };
+
+    res.json({ success: true, data: userResponse });
+  } catch (err) { 
+    next(err); 
+  }
 };
 
 // Update user (only one user allowed)
@@ -51,51 +55,11 @@ exports.updateUser = async (req, res, next) => {
       req.body.password = await bcrypt.hash(req.body.password, 10);
     }
 
-    const user = await prisma.user.update({
-      where: { id: parseInt(id) },
-      data: req.body,
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        createdAt: true
-      }
-    });
-
-    res.json({ success: true, data: user });
-  } catch (err) { next(err); }
-};
-
-// Get all users
-exports.getUsers = async (req, res, next) => {
-  try {
-    const users = await prisma.user.findMany({
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        createdAt: true
-      }
-    });
-    res.json({ success: true, data: users });
-  } catch (err) { next(err); }
-};
-
-// Get user by ID
-exports.getUserById = async (req, res, next) => {
-  try {
-    const user = await prisma.user.findUnique({
-      where: { id: parseInt(req.params.id) },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        role: true,
-        createdAt: true
-      }
-    });
+    const user = await User.findByIdAndUpdate(
+      id,
+      req.body,
+      { new: true, runValidators: true }
+    );
 
     if (!user) {
       return res.status(404).json({
@@ -104,8 +68,64 @@ exports.getUserById = async (req, res, next) => {
       });
     }
 
-    res.json({ success: true, data: user });
-  } catch (err) { next(err); }
+    // Return user without password
+    const userResponse = {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      createdAt: user.createdAt
+    };
+
+    res.json({ success: true, data: userResponse });
+  } catch (err) { 
+    next(err); 
+  }
+};
+
+// Get all users
+exports.getUsers = async (req, res, next) => {
+  try {
+    const users = await User.find().select('-password');
+    
+    const usersResponse = users.map(user => ({
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      createdAt: user.createdAt
+    }));
+
+    res.json({ success: true, data: usersResponse });
+  } catch (err) { 
+    next(err); 
+  }
+};
+
+// Get user by ID
+exports.getUserById = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.params.id).select('-password');
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const userResponse = {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      createdAt: user.createdAt
+    };
+
+    res.json({ success: true, data: userResponse });
+  } catch (err) { 
+    next(err); 
+  }
 };
 
 // Delete user (prevent deletion of the only user)
@@ -113,9 +133,7 @@ exports.deleteUser = async (req, res, next) => {
   try {
     const { id } = req.params;
 
-    const user = await prisma.user.findUnique({
-      where: { id: parseInt(id) }
-    });
+    const user = await User.findById(id);
 
     if (!user) {
       return res.status(404).json({
@@ -125,7 +143,7 @@ exports.deleteUser = async (req, res, next) => {
     }
 
     // Prevent deletion of the only user
-    const userCount = await prisma.user.count();
+    const userCount = await User.countDocuments();
     
     if (userCount === 1) {
       return res.status(400).json({
@@ -134,18 +152,18 @@ exports.deleteUser = async (req, res, next) => {
       });
     }
 
-    await prisma.user.delete({
-      where: { id: parseInt(id) }
-    });
+    await User.findByIdAndDelete(id);
 
     res.json({ success: true, message: 'User deleted successfully' });
-  } catch (err) { next(err); }
+  } catch (err) { 
+    next(err); 
+  }
 };
 
 // Get the only user in the system
 exports.getSystemUser = async (req, res, next) => {
   try {
-    const user = await prisma.user.findFirst();
+    const user = await User.findOne().select('-password');
 
     if (!user) {
       return res.status(404).json({
@@ -154,8 +172,18 @@ exports.getSystemUser = async (req, res, next) => {
       });
     }
 
-    res.json({ success: true, data: user });
-  } catch (err) { next(err); }
+    const userResponse = {
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      createdAt: user.createdAt
+    };
+
+    res.json({ success: true, data: userResponse });
+  } catch (err) { 
+    next(err); 
+  }
 };
 
 // Login user
@@ -171,9 +199,7 @@ exports.login = async (req, res, next) => {
     }
 
     // Find user by email
-    const user = await prisma.user.findUnique({
-      where: { email: email.toLowerCase().trim() }
-    });
+    const user = await User.findOne({ email: email.toLowerCase().trim() });
 
     if (!user) {
       return res.status(401).json({
@@ -195,7 +221,7 @@ exports.login = async (req, res, next) => {
     // Generate JWT token
     const token = jwt.sign(
       { 
-        userId: user.id,
+        userId: user._id.toString(),
         email: user.email,
         role: user.role
       },
@@ -210,7 +236,7 @@ exports.login = async (req, res, next) => {
       success: true,
       data: {
         user: {
-          id: user.id,
+          id: user._id,
           name: user.name,
           email: user.email,
           role: user.role

@@ -16,21 +16,39 @@ exports.getCustomers = async (req, res, next) => {
 
 exports.getCustomerById = async (req, res, next) => {
   try {
-    const row = await service.getCustomerById(+req.params.id);
+    const row = await service.getCustomerById(req.params.id);
+    if (!row) {
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found'
+      });
+    }
     res.json({ success: true, data: row });
   } catch (err) { next(err); }
 };
 
 exports.updateCustomer = async (req, res, next) => {
   try {
-    const row = await service.updateCustomer(+req.params.id, req.body);
+    const row = await service.updateCustomer(req.params.id, req.body);
+    if (!row) {
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found'
+      });
+    }
     res.json({ success: true, data: row });
   } catch (err) { next(err); }
 };
 
 exports.deleteCustomer = async (req, res, next) => {
   try {
-    await service.deleteCustomer(+req.params.id);
-    res.json({ success: true });
+    const result = await service.deleteCustomer(req.params.id);
+    if (!result) {
+      return res.status(404).json({
+        success: false,
+        message: 'Customer not found'
+      });
+    }
+    res.json({ success: true, message: 'Customer deleted successfully' });
   } catch (err) { next(err); }
 };

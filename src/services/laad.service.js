@@ -1,4 +1,9 @@
-const prisma = require('../config/prisma');
+const Laad = require('../models/Laad');
+const LaadItem = require('../models/LaadItem');
+const Supplier = require('../models/Supplier');
+const Vehicle = require('../models/Vehicle');
+const Item = require('../models/Item');
+const { convertToObjectId } = require('../utils/convertId');
 
 /**
  * payload = {
@@ -6,7 +11,7 @@ const prisma = require('../config/prisma');
  *   items: [{ 
  *     itemId, totalBags, remainingBags?, 
  *     qualityGrade?, weightPerBag?, ratePerBag?,
- *     jacobabadParchiNo?, kantyParchiNo? 
+ *     weightFromJacobabad?, faisalabadWeight?
  *   }]
  * }
  */
@@ -18,90 +23,180 @@ exports.createLaadWithItems = async (payload) => {
     throw new Error(`Expected items to be an array, but got ${typeof items}: ${JSON.stringify(items)}`);
   }
 
-  // Check if weight columns exist in database BEFORE transaction
-  let hasWeightColumns = false;
-  try {
-    const result = await prisma.$queryRaw`
-      SELECT column_name 
-      FROM information_schema.columns 
-      WHERE table_schema = 'public' 
-      AND table_name = 'LaadItem' 
-      AND column_name IN ('weightFromJacobabad', 'faisalabadWeight')
-    `;
-    const columnNames = result.map(r => r.column_name);
-    hasWeightColumns = columnNames.includes('weightFromJacobabad') && columnNames.includes('faisalabadWeight');
-  } catch (err) {
-    // If check fails, assume columns don't exist
-    hasWeightColumns = false;
+  // Convert numeric IDs to ObjectIds
+  if (laadData.supplierId) {
+    laadData.supplierId = await convertToObjectId(laadData.supplierId, 'Supplier');
+  }
+  
+  if (laadData.vehicleId) {
+    laadData.vehicleId = await convertToObjectId(laadData.vehicleId, 'Vehicle');
   }
 
-  // transaction to create laad and its items
-  const result = await prisma.$transaction(async (tx) => {
-    // Build item data - conditionally include weight fields based on database schema
-    const itemData = items.map(it => {
+  try {
+    // Create laad
+    const laad = new Laad(laadData);
+    await laad.save();
+
+    // Create laad items
+    const laadItems = [];
+    for (const it of items) {
+      // Convert itemId to ObjectId
+      const itemObjectId = await convertToObjectId(it.itemId, 'Item');
+      
       // Auto-calculate totalAmount if ratePerBag is provided
       const totalAmount = it.ratePerBag && it.totalBags 
         ? parseFloat(it.ratePerBag) * parseInt(it.totalBags)
         : null;
 
-      // Build base item WITHOUT weight fields first
-      const baseItem = {
-        itemId: it.itemId,
+      const laadItem = new LaadItem({
+        laadId: laad._id,
+        itemId: itemObjectId,
         totalBags: it.totalBags,
         remainingBags: it.remainingBags ?? it.totalBags,
         qualityGrade: it.qualityGrade || null,
         weightPerBag: it.weightPerBag || null,
         ratePerBag: it.ratePerBag ? parseFloat(it.ratePerBag) : null,
         totalAmount: totalAmount,
-      };
+        weightFromJacobabad: it.weightFromJacobabad ? parseFloat(it.weightFromJacobabad) : null,
+        faisalabadWeight: it.faisalabadWeight ? parseFloat(it.faisalabadWeight) : null
+      });
 
-      // CRITICAL: Only add weight fields if columns exist in database
-      // We create a new object to avoid Prisma validation issues
-      if (hasWeightColumns) {
-        // Columns exist - include weight fields
-        return {
-          ...baseItem,
-          weightFromJacobabad: it.weightFromJacobabad ? parseFloat(it.weightFromJacobabad) : null,
-          faisalabadWeight: it.faisalabadWeight ? parseFloat(it.faisalabadWeight) : null
-        };
-      } else {
-        // Columns DON'T exist - return base item WITHOUT weight fields
-        // This prevents Prisma from trying to use non-existent columns
-        return baseItem;
-      }
-    });
+      await laadItem.save();
+      laadItems.push(laadItem);
+    }
 
-    const laad = await tx.laad.create({
-      data: {
-        ...laadData,
-        items: { create: itemData }
-      },
-      include: { 
-        supplier: true,
-        vehicle: true,
-        items: { 
-          include: { 
-            item: true 
-          } 
-        } 
-      }
-    });
-    return laad;
-  });
+    // Populate and return
+    const populatedLaad = await Laad.findById(laad._id)
+      .populate('supplierId')
+      .populate('vehicleId')
+      .lean();
 
-  return result;
+    // Populate items
+    const populatedItems = await LaadItem.find({ laadId: laad._id })
+      .populate('itemId')
+      .lean();
+
+    // Transform to match frontend expectations
+    return {
+      ...populatedLaad,
+      id: populatedLaad.id || populatedLaad._id.toString(),
+      supplier: populatedLaad.supplierId ? {
+        id: populatedLaad.supplierId.id || populatedLaad.supplierId._id.toString(),
+        name: populatedLaad.supplierId.name || '',
+        contact: populatedLaad.supplierId.contact || null
+      } : { id: null, name: 'Unknown', contact: null },
+      vehicle: populatedLaad.vehicleId ? {
+        id: populatedLaad.vehicleId.id || populatedLaad.vehicleId._id.toString(),
+        number: populatedLaad.vehicleId.number || '',
+        type: populatedLaad.vehicleId.type || 'OTHER'
+      } : null,
+      items: populatedItems.map(item => ({
+        ...item,
+        id: item.id || item._id.toString(),
+        item: item.itemId ? {
+          id: item.itemId.id || item.itemId._id.toString(),
+          name: item.itemId.name || 'Unknown',
+          quality: item.itemId.quality || '',
+          bagWeight: item.itemId.bagWeight || 0
+        } : { id: null, name: 'Unknown', quality: '', bagWeight: 0 }
+      }))
+    };
+  } catch (error) {
+    throw error;
+  }
 };
 
 exports.getLaads = async () => {
-  return prisma.laad.findMany({
-    orderBy: { arrivalDate: 'desc' },
-    include: { supplier: true, items: { include: { item: true } } }
-  });
+  const laads = await Laad.find()
+    .sort({ arrivalDate: -1 })
+    .populate('supplierId')
+    .populate('vehicleId')
+    .lean();
+
+  // Get items for each laad and transform response
+  const laadsWithItems = await Promise.all(
+    laads.map(async (laad) => {
+      const items = await LaadItem.find({ laadId: laad._id })
+        .populate('itemId')
+        .lean();
+      
+      // Transform to match frontend expectations
+      return {
+        ...laad,
+        id: laad.id || laad._id.toString(),
+        supplier: laad.supplierId ? {
+          id: laad.supplierId.id || laad.supplierId._id.toString(),
+          name: laad.supplierId.name || '',
+          contact: laad.supplierId.contact || null
+        } : { id: null, name: 'Unknown', contact: null },
+        vehicle: laad.vehicleId ? {
+          id: laad.vehicleId.id || laad.vehicleId._id.toString(),
+          number: laad.vehicleId.number || '',
+          type: laad.vehicleId.type || 'OTHER'
+        } : null,
+        items: items.map(item => ({
+          ...item,
+          id: item.id || item._id.toString(),
+          item: item.itemId ? {
+            id: item.itemId.id || item.itemId._id.toString(),
+            name: item.itemId.name || 'Unknown',
+            quality: item.itemId.quality || '',
+            bagWeight: item.itemId.bagWeight || 0
+          } : { id: null, name: 'Unknown', quality: '', bagWeight: 0 }
+        }))
+      };
+    })
+  );
+
+  return laadsWithItems;
 };
 
 exports.getLaadById = async (id) => {
-  return prisma.laad.findUnique({
-    where: { id },
-    include: { supplier: true, items: { include: { item: true } } }
-  });
+  // Support both auto-increment id and MongoDB _id
+  let laad;
+  if (typeof id === 'number' || /^\d+$/.test(id)) {
+    laad = await Laad.findOne({ id: parseInt(id) })
+      .populate('supplierId')
+      .populate('vehicleId')
+      .lean();
+  } else {
+    laad = await Laad.findById(id)
+      .populate('supplierId')
+      .populate('vehicleId')
+      .lean();
+  }
+
+  if (!laad) {
+    return null;
+  }
+
+  const items = await LaadItem.find({ laadId: laad._id })
+    .populate('itemId')
+    .lean();
+
+  // Transform to match frontend expectations
+  return {
+    ...laad,
+    id: laad.id || laad._id.toString(),
+    supplier: laad.supplierId ? {
+      id: laad.supplierId.id || laad.supplierId._id.toString(),
+      name: laad.supplierId.name || '',
+      contact: laad.supplierId.contact || null
+    } : { id: null, name: 'Unknown', contact: null },
+    vehicle: laad.vehicleId ? {
+      id: laad.vehicleId.id || laad.vehicleId._id.toString(),
+      number: laad.vehicleId.number || '',
+      type: laad.vehicleId.type || 'OTHER'
+    } : null,
+    items: items.map(item => ({
+      ...item,
+      id: item.id || item._id.toString(),
+      item: item.itemId ? {
+        id: item.itemId.id || item.itemId._id.toString(),
+        name: item.itemId.name || 'Unknown',
+        quality: item.itemId.quality || '',
+        bagWeight: item.itemId.bagWeight || 0
+      } : { id: null, name: 'Unknown', quality: '', bagWeight: 0 }
+    }))
+  };
 };
