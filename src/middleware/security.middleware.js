@@ -164,7 +164,7 @@ const validateSale = validate([
     .isInt({ min: 1 })
     .withMessage('Valid customer ID is required'),
   body('laadItemId')
-    .isInt({ min: 1 })
+    .notEmpty()
     .withMessage('Valid laad item ID is required'),
   body('bagsSold')
     .isInt({ min: 1 })
