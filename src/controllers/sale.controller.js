@@ -40,6 +40,13 @@ exports.getSaleById = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
+exports.updateSale = async (req, res, next) => {
+  try {
+    const sale = await svc.updateSale(req.params.id, req.body);
+    res.json({ success: true, data: sale });
+  } catch (err) { next(err); }
+};
+
 exports.getMixOrders = async (req, res, next) => {
   try {
     const mixOrders = await svc.getMixOrders();

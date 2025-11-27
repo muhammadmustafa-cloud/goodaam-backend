@@ -6,6 +6,57 @@ const Laad = require('../models/Laad');
 const Supplier = require('../models/Supplier');
 const { convertToObjectId } = require('../utils/convertId');
 
+const toId = (doc) => {
+  if (!doc) return null;
+  return doc.id || doc._id?.toString() || null;
+};
+
+const formatSale = (saleDoc) => {
+  if (!saleDoc) return null;
+
+  const formatted = {
+    ...saleDoc,
+    id: toId(saleDoc),
+  };
+
+  formatted.customer = saleDoc.customerId
+    ? {
+        id: toId(saleDoc.customerId),
+        name: saleDoc.customerId.name || '',
+        contact: saleDoc.customerId.contact || null,
+      }
+    : null;
+
+  formatted.laadItem = saleDoc.laadItemId
+    ? {
+        id: toId(saleDoc.laadItemId),
+        totalBags: saleDoc.laadItemId.totalBags ?? null,
+        remainingBags: saleDoc.laadItemId.remainingBags ?? 0,
+        qualityGrade: saleDoc.laadItemId.qualityGrade || null,
+        item: saleDoc.laadItemId.itemId
+          ? {
+              id: toId(saleDoc.laadItemId.itemId),
+              name: saleDoc.laadItemId.itemId.name || 'Unknown',
+              quality: saleDoc.laadItemId.itemId.quality || '',
+            }
+          : null,
+        laad: saleDoc.laadItemId.laadId
+          ? {
+              id: toId(saleDoc.laadItemId.laadId),
+              laadNumber: saleDoc.laadItemId.laadId.laadNumber || '',
+              supplier: saleDoc.laadItemId.laadId.supplierId
+                ? {
+                    name: saleDoc.laadItemId.laadId.supplierId.name || 'Unknown',
+                  }
+                : { name: 'Unknown' },
+            }
+          : null,
+      }
+    : null;
+
+  return formatted;
+};
+
 exports.createSale = async (payload) => {
   const { 
     customerId, 
@@ -129,30 +180,7 @@ exports.createSale = async (payload) => {
       .lean();
 
     // Transform to match frontend expectations
-    return {
-      ...populatedSale,
-      id: populatedSale.id || populatedSale._id.toString(),
-      customer: populatedSale.customerId ? {
-        id: populatedSale.customerId.id || populatedSale.customerId._id.toString(),
-        name: populatedSale.customerId.name || '',
-        contact: populatedSale.customerId.contact || null
-      } : null,
-      laadItem: populatedSale.laadItemId ? {
-        id: populatedSale.laadItemId.id || populatedSale.laadItemId._id.toString(),
-        item: populatedSale.laadItemId.itemId ? {
-          id: populatedSale.laadItemId.itemId.id || populatedSale.laadItemId.itemId._id.toString(),
-          name: populatedSale.laadItemId.itemId.name || 'Unknown',
-          quality: populatedSale.laadItemId.itemId.quality || ''
-        } : null,
-        laad: populatedSale.laadItemId.laadId ? {
-          id: populatedSale.laadItemId.laadId.id || populatedSale.laadItemId.laadId._id.toString(),
-          laadNumber: populatedSale.laadItemId.laadId.laadNumber || '',
-          supplier: populatedSale.laadItemId.laadId.supplierId ? {
-            name: populatedSale.laadItemId.laadId.supplierId.name || 'Unknown'
-          } : { name: 'Unknown' }
-        } : null
-      } : null
-    };
+    return formatSale(populatedSale);
   } catch (error) {
     throw error;
   }
@@ -327,34 +355,11 @@ exports.getSales = async (filters = {}) => {
     .lean();
 
   // Transform to match frontend expectations
-  return sales.map(sale => ({
-    ...sale,
-    id: sale.id || sale._id.toString(),
-    customer: sale.customerId ? {
-      id: sale.customerId.id || sale.customerId._id.toString(),
-      name: sale.customerId.name || '',
-      contact: sale.customerId.contact || null
-    } : null,
-    laadItem: sale.laadItemId ? {
-      id: sale.laadItemId.id || sale.laadItemId._id.toString(),
-      item: sale.laadItemId.itemId ? {
-        id: sale.laadItemId.itemId.id || sale.laadItemId.itemId._id.toString(),
-        name: sale.laadItemId.itemId.name || 'Unknown',
-        quality: sale.laadItemId.itemId.quality || ''
-      } : null,
-      laad: sale.laadItemId.laadId ? {
-        id: sale.laadItemId.laadId.id || sale.laadItemId.laadId._id.toString(),
-        laadNumber: sale.laadItemId.laadId.laadNumber || '',
-        supplier: sale.laadItemId.laadId.supplierId ? {
-          name: sale.laadItemId.laadId.supplierId.name || 'Unknown'
-        } : { name: 'Unknown' }
-      } : null
-    } : null
-  }));
+  return sales.map(formatSale);
 };
 
 exports.getSaleById = async (id) => {
-  return await Sale.findById(id)
+  const sale = await Sale.findById(id)
     .populate('customerId')
     .populate({
       path: 'laadItemId',
@@ -373,6 +378,8 @@ exports.getSaleById = async (id) => {
       ]
     })
     .lean();
+
+  return formatSale(sale);
 };
 
 exports.getMixOrders = async () => {
@@ -387,4 +394,139 @@ exports.getMixOrders = async () => {
       ]
     })
     .lean();
+};
+
+exports.updateSale = async (id, payload) => {
+  const {
+    customerId,
+    laadItemId,
+    bagsSold,
+    ratePerBag,
+    qualityGrade,
+    laadNumber,
+    truckNumber,
+    address,
+    brokerName,
+    date,
+  } = payload;
+
+  if (!customerId || !laadItemId || !Number.isInteger(bagsSold) || bagsSold <= 0) {
+    const e = new Error('customerId, laadItemId and positive integer bagsSold are required');
+    e.status = 400;
+    throw e;
+  }
+
+  const sale = await Sale.findById(id);
+  if (!sale) {
+    const e = new Error('Sale not found');
+    e.status = 404;
+    throw e;
+  }
+
+  if (sale.isMixOrder) {
+    const e = new Error('Mix order sales cannot be edited individually');
+    e.status = 400;
+    throw e;
+  }
+
+  const customerObjectId = await convertToObjectId(customerId, 'Customer');
+  const newLaadItemObjectId = await convertToObjectId(laadItemId, 'LaadItem');
+
+  const currentLaadItem = await LaadItem.findById(sale.laadItemId);
+  if (!currentLaadItem) {
+    const e = new Error('Existing laad item not found');
+    e.status = 404;
+    throw e;
+  }
+
+  const targetLaadItem = await LaadItem.findById(newLaadItemObjectId).populate('laadId');
+  if (!targetLaadItem) {
+    const e = new Error('Selected laad item not found');
+    e.status = 404;
+    throw e;
+  }
+
+  const sameLaadItem = currentLaadItem._id.equals(newLaadItemObjectId);
+
+  if (sameLaadItem) {
+    const available = currentLaadItem.remainingBags + sale.bagsSold;
+    if (bagsSold > available) {
+      const e = new Error(`Insufficient stock. Available: ${available}, Requested: ${bagsSold}`);
+      e.status = 400;
+      throw e;
+    }
+    currentLaadItem.remainingBags = available - bagsSold;
+    await currentLaadItem.save();
+  } else {
+    // restore previous stock
+    currentLaadItem.remainingBags += sale.bagsSold;
+    await currentLaadItem.save();
+
+    if (targetLaadItem.remainingBags < bagsSold) {
+      const e = new Error(`Insufficient stock. Available: ${targetLaadItem.remainingBags}, Requested: ${bagsSold}`);
+      e.status = 400;
+      throw e;
+    }
+
+    targetLaadItem.remainingBags -= bagsSold;
+    await targetLaadItem.save();
+  }
+
+  let finalLaadNumber = laadNumber || sale.laadNumber || null;
+  let finalBrokerName = brokerName || sale.brokerName || null;
+
+  if (targetLaadItem.laadId) {
+    const fullLaad = await Laad.findById(targetLaadItem.laadId)
+      .populate('supplierId');
+    if (fullLaad) {
+      if (!finalLaadNumber) {
+        finalLaadNumber = fullLaad.laadNumber;
+      }
+      if (!finalBrokerName && fullLaad.supplierId) {
+        finalBrokerName = fullLaad.supplierId.name;
+      }
+    }
+  }
+
+  const parsedRate =
+    ratePerBag === null || ratePerBag === undefined || ratePerBag === ''
+      ? null
+      : parseFloat(ratePerBag);
+  const totalAmount = parsedRate && bagsSold ? parsedRate * bagsSold : null;
+
+  sale.customerId = customerObjectId;
+  sale.laadItemId = newLaadItemObjectId;
+  sale.bagsSold = bagsSold;
+  sale.ratePerBag = parsedRate;
+  sale.totalAmount = totalAmount;
+  sale.qualityGrade = qualityGrade || null;
+  sale.laadNumber = finalLaadNumber;
+  sale.truckNumber = truckNumber || null;
+  sale.address = address || null;
+  sale.brokerName = finalBrokerName;
+  sale.date = date ? new Date(date) : sale.date;
+
+  await sale.save();
+
+  const updatedSale = await Sale.findById(sale._id)
+    .populate('customerId')
+    .populate({
+      path: 'laadItemId',
+      populate: [
+        {
+          path: 'itemId',
+          model: 'Item',
+        },
+        {
+          path: 'laadId',
+          populate: {
+            path: 'supplierId',
+            model: 'Supplier',
+          },
+        },
+      ],
+    })
+    .lean();
+
+  return formatSale(updatedSale);
 };
