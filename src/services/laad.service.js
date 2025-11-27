@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Laad = require('../models/Laad');
 const LaadItem = require('../models/LaadItem');
 const Supplier = require('../models/Supplier');
@@ -199,4 +200,105 @@ exports.getLaadById = async (id) => {
       } : { id: null, name: 'Unknown', quality: '', bagWeight: 0 }
     }))
   };
+};
+
+exports.updateLaadWithItems = async (id, payload) => {
+  const { items = [], ...laadData } = payload;
+
+  let laad = null;
+  if (mongoose.Types.ObjectId.isValid(id)) {
+    laad = await Laad.findById(id);
+  }
+
+  if (!laad && (typeof id === 'number' || /^\d+$/.test(id))) {
+    laad = await Laad.findOne({ id: parseInt(id) });
+  }
+
+  if (!laad) {
+    const error = new Error('Laad not found');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (laadData.supplierId) {
+    laadData.supplierId = await convertToObjectId(laadData.supplierId, 'Supplier');
+  }
+
+  if (laadData.vehicleId) {
+    laadData.vehicleId = await convertToObjectId(laadData.vehicleId, 'Vehicle');
+  }
+
+  if (typeof laadData.vehicleNumber !== 'undefined') {
+    laad.vehicleNumber = laadData.vehicleNumber || null;
+  }
+
+  if (laadData.supplierId) {
+    laad.supplierId = laadData.supplierId;
+  }
+
+  if (laadData.vehicleId || laad.vehicleId) {
+    laad.vehicleId = laadData.vehicleId || null;
+  }
+
+  if (laadData.laadNumber) {
+    laad.laadNumber = laadData.laadNumber;
+  }
+
+  if (laadData.arrivalDate) {
+    laad.arrivalDate = new Date(laadData.arrivalDate);
+  }
+
+  if (typeof laadData.notes !== 'undefined') {
+    laad.notes = laadData.notes || null;
+  }
+
+  await laad.save();
+
+  const existingItems = await LaadItem.find({ laadId: laad._id });
+  const existingMap = new Map();
+  existingItems.forEach((item) => {
+    existingMap.set(item._id.toString(), item);
+    if (typeof item.id !== 'undefined') {
+      existingMap.set(item.id.toString(), item);
+    }
+  });
+
+  for (const it of items) {
+    const itemObjectId = await convertToObjectId(it.itemId, 'Item');
+    const totalBags = parseInt(it.totalBags, 10) || 0;
+
+    const updateData = {
+      itemId: itemObjectId,
+      totalBags,
+      qualityGrade: it.qualityGrade || null,
+      weightPerBag: it.weightPerBag ? parseFloat(it.weightPerBag) : null,
+      ratePerBag: it.ratePerBag ? parseFloat(it.ratePerBag) : null,
+      totalAmount: it.ratePerBag && totalBags ? parseFloat(it.ratePerBag) * totalBags : null,
+      weightFromJacobabad: it.weightFromJacobabad ? parseFloat(it.weightFromJacobabad) : null,
+      faisalabadWeight: it.faisalabadWeight ? parseFloat(it.faisalabadWeight) : null
+    };
+
+    if (typeof it.remainingBags === 'number') {
+      updateData.remainingBags = Math.max(0, it.remainingBags);
+    }
+
+    const refId = it.laadItemId || it.id;
+    if (refId && existingMap.has(refId.toString())) {
+      const existing = existingMap.get(refId.toString());
+      Object.assign(existing, updateData);
+      if (typeof updateData.remainingBags === 'undefined' && (!existing.remainingBags || existing.remainingBags < 0)) {
+        existing.remainingBags = totalBags;
+      }
+      await existing.save();
+    } else {
+      const laadItem = new LaadItem({
+        laadId: laad._id,
+        ...updateData,
+        remainingBags: typeof updateData.remainingBags === 'number' ? updateData.remainingBags : totalBags
+      });
+      await laadItem.save();
+    }
+  }
+
+  return exports.getLaadById(laad._id);
 };

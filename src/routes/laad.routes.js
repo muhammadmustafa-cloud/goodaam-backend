@@ -12,6 +12,7 @@ router.use(authenticate);
 
 // Apply write limiter to write operations
 router.post('/', writeLimiter, validateLaad, laadController.createLaad);
+router.put('/:id', validateObjectId, writeLimiter, validateLaad, laadController.updateLaad);
 router.get('/', laadController.getLaads);
 router.get('/:id', validateObjectId, laadController.getLaadById);
 

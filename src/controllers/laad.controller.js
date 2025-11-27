@@ -26,3 +26,10 @@ exports.getLaadById = async (req, res, next) => {
     res.json({ success: true, data: row });
   } catch (err) { next(err); }
 };
+
+exports.updateLaad = async (req, res, next) => {
+  try {
+    const laad = await svc.updateLaadWithItems(req.params.id, req.body);
+    res.json({ success: true, data: laad });
+  } catch (err) { next(err); }
+};
