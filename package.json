@@ -10,6 +10,7 @@
     "seed:admin": "node src/scripts/seedAdmin.js",
     "migrate:bagWeight": "node src/scripts/migrateBagWeight.js",
     "migrate:gatePassNumber": "node src/scripts/migrateGatePassNumber.js",
+    "migrate:saleGatePassNumber": "node src/scripts/migrateSaleGatePassNumber.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage"

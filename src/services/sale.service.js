@@ -68,7 +68,8 @@ exports.createSale = async (payload) => {
     laadNumber,
     truckNumber,
     address,
-    date
+    date,
+    gatePassNumber
   } = payload;
   
   if (!customerId || !laadItemId || !Number.isInteger(bagsSold) || !bagWeight) {
@@ -157,6 +158,7 @@ exports.createSale = async (payload) => {
       truckNumber: truckNumber || null,
       address: address || null,
       brokerName: brokerName || null,
+      gatePassNumber: gatePassNumber || null,
       date: date ? new Date(date) : new Date()
     });
 
@@ -196,7 +198,7 @@ exports.createSale = async (payload) => {
 
 // Create mix order (multiple laad items)
 exports.createMixOrder = async (payload) => {
-  const { customerId, items, qualityGrade, ratePerBag } = payload;
+  const { customerId, items, qualityGrade, ratePerBag, gatePassNumber } = payload;
   
   if (!customerId || !Array.isArray(items) || items.length === 0) {
     const e = new Error('customerId and items array are required');
@@ -264,6 +266,7 @@ exports.createMixOrder = async (payload) => {
         totalAmount: totalAmount,
         qualityGrade: qualityGrade || null,
         isMixOrder: true,
+        gatePassNumber: gatePassNumber || null,
         mixOrderDetails: null // Will be updated after all sales are created
       });
 
@@ -417,6 +420,7 @@ exports.updateSale = async (id, payload) => {
     address,
     brokerName,
     date,
+    gatePassNumber,
   } = payload;
 
   if (!customerId || !laadItemId || !Number.isInteger(bagsSold) || bagsSold <= 0 || !bagWeight) {
@@ -520,6 +524,7 @@ exports.updateSale = async (id, payload) => {
   sale.truckNumber = truckNumber || null;
   sale.address = address || null;
   sale.brokerName = finalBrokerName;
+  sale.gatePassNumber = gatePassNumber || null;
   sale.date = date ? new Date(date) : sale.date;
 
   await sale.save();

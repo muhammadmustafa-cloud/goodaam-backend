@@ -61,6 +61,12 @@ const saleSchema = new mongoose.Schema({
     type: String,
     trim: true,
     index: true
+  },
+  gatePassNumber: {
+    type: String,
+    trim: true,
+    index: true,
+    comment: 'Gate pass number for sale tracking'
   }
 }, {
   timestamps: true
@@ -73,6 +79,7 @@ saleSchema.index({ createdAt: -1 });
 saleSchema.index({ date: -1 });
 saleSchema.index({ laadNumber: 1 });
 saleSchema.index({ truckNumber: 1 });
+saleSchema.index({ gatePassNumber: 1 });
 
 module.exports = mongoose.model('Sale', saleSchema);
 
