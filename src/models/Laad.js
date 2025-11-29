@@ -19,6 +19,11 @@ const laadSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  gatePassNumber: {
+    type: String,
+    trim: true,
+    index: true
+  },
   notes: {
     type: String,
     trim: true
