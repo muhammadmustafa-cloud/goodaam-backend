@@ -62,6 +62,7 @@ exports.createSale = async (payload) => {
     customerId, 
     laadItemId, 
     bagsSold, 
+    bagWeight,
     qualityGrade, 
     ratePerBag,
     laadNumber,
@@ -70,14 +71,20 @@ exports.createSale = async (payload) => {
     date
   } = payload;
   
-  if (!customerId || !laadItemId || !Number.isInteger(bagsSold)) {
-    const e = new Error('customerId, laadItemId and integer bagsSold are required');
+  if (!customerId || !laadItemId || !Number.isInteger(bagsSold) || !bagWeight) {
+    const e = new Error('customerId, laadItemId, integer bagsSold and bagWeight are required');
     e.status = 400; 
     throw e;
   }
 
   if (bagsSold <= 0) {
     const e = new Error('bagsSold must be greater than 0');
+    e.status = 400; 
+    throw e;
+  }
+
+  if (bagWeight <= 0) {
+    const e = new Error('bagWeight must be greater than 0');
     e.status = 400; 
     throw e;
   }
@@ -141,6 +148,7 @@ exports.createSale = async (payload) => {
       customerId: customerObjectId,
       laadItemId: laadItemObjectId,
       bagsSold,
+      bagWeight: parseFloat(bagWeight),
       ratePerBag: ratePerBag ? parseFloat(ratePerBag) : null,
       totalAmount: totalAmount,
       qualityGrade: qualityGrade || null,
@@ -401,6 +409,7 @@ exports.updateSale = async (id, payload) => {
     customerId,
     laadItemId,
     bagsSold,
+    bagWeight,
     ratePerBag,
     qualityGrade,
     laadNumber,
@@ -410,8 +419,14 @@ exports.updateSale = async (id, payload) => {
     date,
   } = payload;
 
-  if (!customerId || !laadItemId || !Number.isInteger(bagsSold) || bagsSold <= 0) {
-    const e = new Error('customerId, laadItemId and positive integer bagsSold are required');
+  if (!customerId || !laadItemId || !Number.isInteger(bagsSold) || bagsSold <= 0 || !bagWeight) {
+    const e = new Error('customerId, laadItemId, positive integer bagsSold and bagWeight are required');
+    e.status = 400;
+    throw e;
+  }
+
+  if (bagWeight <= 0) {
+    const e = new Error('bagWeight must be greater than 0');
     e.status = 400;
     throw e;
   }
@@ -497,6 +512,7 @@ exports.updateSale = async (id, payload) => {
   sale.customerId = customerObjectId;
   sale.laadItemId = newLaadItemObjectId;
   sale.bagsSold = bagsSold;
+  sale.bagWeight = parseFloat(bagWeight);
   sale.ratePerBag = parsedRate;
   sale.totalAmount = totalAmount;
   sale.qualityGrade = qualityGrade || null;

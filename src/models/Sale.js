@@ -22,6 +22,12 @@ const saleSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  bagWeight: {
+    type: Number,
+    required: true,
+    min: 0.1,
+    comment: 'Weight per bag sold to customer (can differ from stock bag weight)'
+  },
   ratePerBag: {
     type: Number
   },

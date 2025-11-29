@@ -169,6 +169,9 @@ const validateSale = validate([
   body('bagsSold')
     .isInt({ min: 1 })
     .withMessage('Bags sold must be a positive integer'),
+  body('bagWeight')
+    .isFloat({ min: 0.1 })
+    .withMessage('Bag weight must be a positive number (minimum 0.1 kg)'),
   body('ratePerBag')
     .optional({ nullable: true, checkFalsy: true })
     .isFloat({ min: 0 })

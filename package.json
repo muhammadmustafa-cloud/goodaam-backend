@@ -7,7 +7,11 @@
     "dev": "nodemon index.js ",
     "start": "node index.js",
     "db:seed": "node src/scripts/seedAdmin.js",
-    "seed:admin": "node src/scripts/seedAdmin.js"
+    "seed:admin": "node src/scripts/seedAdmin.js",
+    "migrate:bagWeight": "node src/scripts/migrateBagWeight.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage"
   },
   "keywords": [],
   "author": "",
