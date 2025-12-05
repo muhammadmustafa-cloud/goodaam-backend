@@ -16,10 +16,6 @@ const itemSchema = new mongoose.Schema({
     type: String,
     required: true,
     trim: true
-  },
-  bagWeight: {
-    type: Number,
-    required: true
   }
 }, {
   timestamps: true

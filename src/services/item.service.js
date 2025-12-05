@@ -2,13 +2,13 @@ const Item = require('../models/Item');
 const LaadItem = require('../models/LaadItem');
 
 exports.createItem = async (payload) => {
-  // expecting { name, quality, bagWeight }
+  // expecting { name, quality }
   const item = new Item(payload);
   return await item.save();
 };
 
 exports.getItems = async () => {
-  return await Item.find().sort({ name: 1 });
+  return await Item.find().sort({ id: 1 });
 };
 
 exports.getItemStockSummary = async () => {
@@ -42,7 +42,6 @@ exports.getItemStockSummary = async () => {
       itemId: row._id,
       itemName: item.name || 'Unknown Item',
       quality: item.quality || null,
-      bagWeight: item.bagWeight || null,
       totalBags,
       remainingBags,
       soldBags: totalBags - remainingBags,

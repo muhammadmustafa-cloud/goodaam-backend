@@ -131,10 +131,7 @@ const validateItem = validate([
     .optional()
     .trim()
     .isLength({ max: 50 })
-    .withMessage('Quality must be maximum 50 characters'),
-  body('bagWeight')
-    .isNumeric()
-    .withMessage('Bag weight must be a number')
+    .withMessage('Quality must be maximum 50 characters')
 ]);
 
 const validateLaad = validate([
