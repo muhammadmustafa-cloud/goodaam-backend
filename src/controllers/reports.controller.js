@@ -393,12 +393,15 @@ exports.getStockMovement = async (req, res) => {
             date: laad.arrivalDate,
             reference: laad.laadNumber,
             laadNumber: laad.laadNumber,
+            gatePassNumber: laad.gatePassNumber || 'N/A',
             party: laad.supplierId?.name || 'Unknown',
             item: item.itemId?.name || 'Unknown',
             quality: item.qualityGrade || item.itemId?.quality || 'N/A',
             bags: item.totalBags || 0,
             rate: parseFloat(item.ratePerBag) || 0,
             amount: parseFloat(item.totalAmount) || 0,
+            truckNumber: laad.vehicleNumber || 'N/A',
+            bagWeight: item.weightPerBag || null,
           });
         }
       });
@@ -410,12 +413,15 @@ exports.getStockMovement = async (req, res) => {
         date: sale.date || sale.createdAt,
         reference: `SALE-${sale._id}`,
         laadNumber: sale.laadNumber || sale.laadItemId?.laadId?.laadNumber || 'N/A',
+        gatePassNumber: sale.gatePassNumber || sale.laadItemId?.laadId?.gatePassNumber || 'N/A',
         party: sale.customerId?.name || 'Unknown',
         item: sale.laadItemId?.itemId?.name || 'Unknown',
         quality: sale.qualityGrade || sale.laadItemId?.qualityGrade || sale.laadItemId?.itemId?.quality || 'N/A',
         bags: sale.bagsSold,
         rate: parseFloat(sale.ratePerBag) || 0,
         amount: parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0)),
+        truckNumber: sale.truckNumber || sale.laadItemId?.laadId?.vehicleNumber || 'N/A',
+        bagWeight: sale.bagWeight || null,
       });
     });
 
