@@ -27,6 +27,12 @@ const { apiLimiter } = require('./src/middleware/rateLimiter.middleware');
 
 const app = express();
 
+// Fail fast if security-critical envs are missing
+if (!process.env.JWT_SECRET) {
+  logger.error('❌ JWT_SECRET is not set. Set it in your environment before starting the server.');
+  process.exit(1);
+}
+
 // Trust proxy (important for rate limiting behind reverse proxy)
 app.set('trust proxy', 1);
 
@@ -44,9 +50,24 @@ app.use(helmet({
 }));
 
 // CORS Configuration - SECURE
-// Allow all origins (reflect request origin so credentials work across origins)
+const allowedOrigins = (() => {
+  // Comma-separated list in env
+  if (process.env.ALLOWED_ORIGINS) {
+    return process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()).filter(Boolean);
+  }
+  // Single explicit frontend URL fallback
+  if (process.env.FRONTEND_URL) return [process.env.FRONTEND_URL];
+  // Sensible defaults for local dev only
+  return ['http://localhost:3000'];
+})();
+
 app.use(cors({
-  origin: true,
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl) and same-origin
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],

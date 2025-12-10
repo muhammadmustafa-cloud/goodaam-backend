@@ -4,9 +4,9 @@ const userController = require('../controllers/user.controller');
 const { authenticate, authorize } = require('../middleware/auth.middleware');
 const { authLimiter } = require('../middleware/rateLimiter.middleware');
 
-// Public routes
+// Public routes (rate-limited)
 router.post('/login', authLimiter, userController.login); // Login endpoint
-router.post('/register', userController.createUser); // Initial registration (only if no user exists)
+router.post('/register', authLimiter, userController.createUser); // Initial registration (only if explicitly allowed)
 
 // Protected routes - require authentication
 router.get('/verify', authenticate, userController.verifyToken); // Verify token

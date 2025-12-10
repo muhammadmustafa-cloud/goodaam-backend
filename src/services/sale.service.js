@@ -103,19 +103,15 @@ exports.createSale = async (payload) => {
       throw e;
     }
 
-    // Check if laadItem exists
-    const laadItem = await LaadItem.findById(laadItemObjectId)
-      .populate('laadId');
+    // Atomically check & decrement stock to prevent overselling under concurrency
+    const laadItem = await LaadItem.findOneAndUpdate(
+      { _id: laadItemObjectId, remainingBags: { $gte: bagsSold } },
+      { $inc: { remainingBags: -bagsSold } },
+      { new: true }
+    ).populate('laadId');
     
     if (!laadItem) {
-      const e = new Error(`LaadItem with ID ${laadItemId} not found`);
-      e.status = 404; 
-      throw e;
-    }
-
-    // Check stock availability
-    if (laadItem.remainingBags < bagsSold) {
-      const e = new Error(`Insufficient stock. Available: ${laadItem.remainingBags}, Requested: ${bagsSold}`);
+      const e = new Error(`Insufficient stock or LaadItem ${laadItemId} not found`);
       e.status = 400; 
       throw e;
     }
@@ -163,10 +159,6 @@ exports.createSale = async (payload) => {
     });
 
     await sale.save();
-
-    // Update remaining bags
-    laadItem.remainingBags -= bagsSold;
-    await laadItem.save();
 
     // Populate and return
     const populatedSale = await Sale.findById(sale._id)

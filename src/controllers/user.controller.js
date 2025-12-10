@@ -3,10 +3,30 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const logger = require('../config/logger');
 
-// Create user with single user constraint
+// Create user with single user constraint + bootstrap guard
 exports.createUser = async (req, res, next) => {
   try {
     const { name, email, password, role = 'ADMIN' } = req.body;
+
+    // Allow registration only when explicitly enabled (bootstrap-only)
+    const allowRegistration = process.env.ALLOW_REGISTRATION === 'true';
+    if (!allowRegistration) {
+      return res.status(403).json({
+        success: false,
+        message: 'Registration is disabled. Set ALLOW_REGISTRATION=true for initial bootstrap.',
+      });
+    }
+
+    // Optional bootstrap secret to prevent public signups in production
+    if (process.env.ADMIN_SETUP_SECRET) {
+      const provided = req.headers['x-setup-secret'];
+      if (provided !== process.env.ADMIN_SETUP_SECRET) {
+        return res.status(403).json({
+          success: false,
+          message: 'Invalid setup secret for registration',
+        });
+      }
+    }
 
     // Check if any user already exists
     const existingUser = await User.findOne();
@@ -14,7 +34,7 @@ exports.createUser = async (req, res, next) => {
     if (existingUser) {
       return res.status(400).json({
         success: false,
-        message: 'Only one user is allowed in the system'
+        message: 'Admin already exists; registration is closed.'
       });
     }
 
@@ -219,13 +239,18 @@ exports.login = async (req, res, next) => {
     }
 
     // Generate JWT token
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      throw new Error('JWT_SECRET is not configured');
+    }
+
     const token = jwt.sign(
       { 
         userId: user._id.toString(),
         email: user.email,
         role: user.role
       },
-      process.env.JWT_SECRET || 'your-secret-key-change-in-production',
+      secret,
       { 
         expiresIn: process.env.JWT_EXPIRES_IN || '7d' // 7 days default
       }
