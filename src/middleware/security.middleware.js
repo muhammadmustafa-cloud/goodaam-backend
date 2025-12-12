@@ -139,16 +139,14 @@ const validateLaad = validate([
     .trim()
     .isLength({ min: 1, max: 50 })
     .withMessage('Laad number must be between 1 and 50 characters'),
-  body('supplierId')
-    .isInt({ min: 1 })
-    .withMessage('Valid supplier ID is required'),
-  body('vehicleId')
-    .optional()
-    .isInt({ min: 1 })
-    .withMessage('Valid vehicle ID is required'),
   body('arrivalDate')
     .isISO8601()
     .withMessage('Valid arrival date is required'),
+  body('gatePassNumber')
+    .optional()
+    .trim()
+    .isLength({ max: 50 })
+    .withMessage('Gate pass number must be maximum 50 characters'),
   body('notes')
     .optional()
     .trim()

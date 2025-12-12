@@ -302,3 +302,28 @@ exports.updateLaadWithItems = async (id, payload) => {
 
   return exports.getLaadById(laad._id);
 };
+
+exports.deleteLaad = async (id) => {
+  let laad = null;
+  if (mongoose.Types.ObjectId.isValid(id)) {
+    laad = await Laad.findById(id);
+  }
+
+  if (!laad && (typeof id === 'number' || /^\d+$/.test(id))) {
+    laad = await Laad.findOne({ id: parseInt(id) });
+  }
+
+  if (!laad) {
+    const error = new Error('Laad not found');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  // Delete all associated LaadItems first
+  await LaadItem.deleteMany({ laadId: laad._id });
+
+  // Delete the laad
+  await Laad.findByIdAndDelete(laad._id);
+
+  return { message: 'Laad and associated items deleted successfully' };
+};

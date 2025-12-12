@@ -21,6 +21,12 @@ router.get('/sales/daily', reportsController.getDailySalesReport);
 // Stock movement
 router.get('/stock/movement', reportsController.getStockMovement);
 
+// Laad report
+router.get('/laad/:laadNumber', reportsController.getLaadReport);
+
+// Item report
+router.get('/item/:itemId', reportsController.getItemReport);
+
 module.exports = router;
 
 

@@ -33,3 +33,10 @@ exports.updateLaad = async (req, res, next) => {
     res.json({ success: true, data: laad });
   } catch (err) { next(err); }
 };
+
+exports.deleteLaad = async (req, res, next) => {
+  try {
+    await svc.deleteLaad(req.params.id);
+    res.json({ success: true, message: 'Laad deleted successfully' });
+  } catch (err) { next(err); }
+};

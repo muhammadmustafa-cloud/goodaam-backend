@@ -31,7 +31,7 @@ const laadSchema = new mongoose.Schema({
   supplierId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Supplier',
-    required: true,
+    required: false,
     index: true
   }
 }, {

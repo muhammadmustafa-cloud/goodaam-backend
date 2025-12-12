@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Customer = require('../models/Customer');
 const Supplier = require('../models/Supplier');
 const Sale = require('../models/Sale');
@@ -549,6 +550,356 @@ exports.getAllSuppliersLedger = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: 'Failed to fetch suppliers ledger',
+    });
+  }
+};
+
+/**
+ * Laad Report - Detailed report for a specific laad
+ * Shows all items in the laad (incoming) and all sales from that laad (outgoing)
+ */
+exports.getLaadReport = async (req, res) => {
+  try {
+    const { laadNumber } = req.params;
+    const { startDate, endDate } = req.query;
+
+    // Find laad by laadNumber
+    const laad = await Laad.findOne({ laadNumber })
+      .populate('supplierId')
+      .populate('vehicleId')
+      .lean();
+
+    if (!laad) {
+      return res.status(404).json({
+        success: false,
+        message: `Laad with number ${laadNumber} not found`,
+      });
+    }
+
+    // Build date filter for sales
+    const saleDateFilter = {};
+    if (startDate || endDate) {
+      saleDateFilter.date = {};
+      if (startDate) saleDateFilter.date.$gte = new Date(startDate);
+      if (endDate) saleDateFilter.date.$lte = new Date(endDate);
+    }
+
+    // Get all items in this laad (incoming stock)
+    const laadItems = await LaadItem.find({ laadId: laad._id })
+      .populate('itemId')
+      .sort({ createdAt: 1 })
+      .lean();
+
+    // Get all sales from items in this laad (outgoing stock)
+    const laadItemIds = laadItems.map(item => item._id);
+    const sales = await Sale.find({
+      laadItemId: { $in: laadItemIds },
+      ...saleDateFilter
+    })
+      .populate('customerId')
+      .populate({
+        path: 'laadItemId',
+        populate: {
+          path: 'itemId',
+          model: 'Item'
+        }
+      })
+      .sort({ date: -1, createdAt: -1 })
+      .lean();
+
+    // Calculate incoming summary
+    const incomingSummary = {
+      totalItems: laadItems.length,
+      totalBags: laadItems.reduce((sum, item) => sum + (item.totalBags || 0), 0),
+      totalAmount: laadItems.reduce((sum, item) => sum + (parseFloat(item.totalAmount) || 0), 0),
+      totalWeight: laadItems.reduce((sum, item) => {
+        const weight = item.faisalabadWeight || item.weightFromJacobabad || 0;
+        return sum + (parseFloat(weight) || 0);
+      }, 0),
+    };
+
+    // Calculate outgoing summary
+    const outgoingSummary = {
+      totalSales: sales.length,
+      totalBagsSold: sales.reduce((sum, sale) => sum + (sale.bagsSold || 0), 0),
+      totalRevenue: sales.reduce((sum, sale) => {
+        const amount = parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0));
+        return sum + amount;
+      }, 0),
+      uniqueCustomers: new Set(sales.map(s => s.customerId?._id?.toString()).filter(Boolean)).size,
+    };
+
+    // Format incoming items
+    const incomingItems = laadItems.map(item => ({
+      id: item.id || item._id.toString(),
+      itemName: item.itemId?.name || 'Unknown',
+      itemQuality: item.itemId?.quality || 'N/A',
+      qualityGrade: item.qualityGrade || 'N/A',
+      totalBags: item.totalBags || 0,
+      remainingBags: item.remainingBags || 0,
+      soldBags: (item.totalBags || 0) - (item.remainingBags || 0),
+      weightPerBag: item.weightPerBag || null,
+      weightFromJacobabad: item.weightFromJacobabad || null,
+      faisalabadWeight: item.faisalabadWeight || null,
+      ratePerBag: parseFloat(item.ratePerBag) || 0,
+      totalAmount: parseFloat(item.totalAmount) || 0,
+    }));
+
+    // Format outgoing sales
+    const outgoingSales = sales.map(sale => ({
+      id: sale._id.toString(),
+      date: sale.date || sale.createdAt,
+      customerName: sale.customerId?.name || 'Unknown',
+      customerContact: sale.customerId?.contact || null,
+      itemName: sale.laadItemId?.itemId?.name || 'Unknown',
+      qualityGrade: sale.qualityGrade || sale.laadItemId?.qualityGrade || 'N/A',
+      bagsSold: sale.bagsSold || 0,
+      bagWeight: sale.bagWeight || null,
+      ratePerBag: parseFloat(sale.ratePerBag) || 0,
+      totalAmount: parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0)),
+      gatePassNumber: sale.gatePassNumber || null,
+      truckNumber: sale.truckNumber || null,
+      address: sale.address || null,
+      brokerName: sale.brokerName || null,
+      isMixOrder: sale.isMixOrder || false,
+    }));
+
+    return res.json({
+      success: true,
+      data: {
+        laad: {
+          laadNumber: laad.laadNumber,
+          arrivalDate: laad.arrivalDate,
+          supplierName: laad.supplierId?.name || 'Unknown',
+          supplierContact: laad.supplierId?.contact || null,
+          vehicleNumber: laad.vehicleNumber || laad.vehicleId?.number || null,
+          vehicleType: laad.vehicleId?.type || null,
+          gatePassNumber: laad.gatePassNumber || null,
+          notes: laad.notes || null,
+        },
+        incoming: {
+          summary: incomingSummary,
+          items: incomingItems,
+        },
+        outgoing: {
+          summary: outgoingSummary,
+          sales: outgoingSales,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching laad report:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch laad report',
+    });
+  }
+};
+
+/**
+ * Item Report - Detailed report for a specific item
+ * Shows all laads where this item came in and all sales of this item
+ */
+exports.getItemReport = async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    const { startDate, endDate } = req.query;
+
+    // Find item
+    let item;
+    if (mongoose.Types.ObjectId.isValid(itemId) && itemId.length === 24) {
+      item = await Item.findById(itemId).lean();
+    } else {
+      // Try numeric ID
+      item = await Item.findOne({ id: parseInt(itemId) }).lean();
+    }
+
+    if (!item) {
+      return res.status(404).json({
+        success: false,
+        message: `Item with ID ${itemId} not found`,
+      });
+    }
+
+    // Build date filters
+    const laadDateFilter = {};
+    const saleDateFilter = {};
+    
+    if (startDate || endDate) {
+      if (startDate) {
+        laadDateFilter.arrivalDate = { $gte: new Date(startDate) };
+        saleDateFilter.date = { $gte: new Date(startDate) };
+      }
+      if (endDate) {
+        if (laadDateFilter.arrivalDate) {
+          laadDateFilter.arrivalDate.$lte = new Date(endDate);
+        } else {
+          laadDateFilter.arrivalDate = { $lte: new Date(endDate) };
+        }
+        if (saleDateFilter.date) {
+          saleDateFilter.date.$lte = new Date(endDate);
+        } else {
+          saleDateFilter.date = { $lte: new Date(endDate) };
+        }
+      }
+    }
+
+    // Get all laad items for this item
+    const laadItems = await LaadItem.find({
+      itemId: item._id
+    })
+      .populate({
+        path: 'laadId',
+        populate: {
+          path: 'supplierId',
+          model: 'Supplier'
+        }
+      })
+      .lean();
+
+    // Filter by date if provided
+    let filteredLaadItems = laadItems.filter(li => li.laadId !== null);
+    
+    if (Object.keys(laadDateFilter).length > 0) {
+      filteredLaadItems = filteredLaadItems.filter(li => {
+        if (!li.laadId || !li.laadId.arrivalDate) return false;
+        const arrivalDate = new Date(li.laadId.arrivalDate);
+        if (laadDateFilter.arrivalDate.$gte && arrivalDate < laadDateFilter.arrivalDate.$gte) return false;
+        if (laadDateFilter.arrivalDate.$lte && arrivalDate > laadDateFilter.arrivalDate.$lte) return false;
+        return true;
+      });
+    }
+
+    // Get all sales for this item
+    const sales = await Sale.find({
+      laadItemId: { $in: filteredLaadItems.map(li => li._id) },
+      ...saleDateFilter
+    })
+      .populate('customerId')
+      .populate({
+        path: 'laadItemId',
+        populate: [
+          {
+            path: 'itemId',
+            model: 'Item'
+          },
+          {
+            path: 'laadId',
+            model: 'Laad'
+          }
+        ]
+      })
+      .sort({ date: -1, createdAt: -1 })
+      .lean();
+
+    // Calculate incoming summary (from laads)
+    const incomingSummary = {
+      totalLaads: new Set(filteredLaadItems.map(li => li.laadId?._id?.toString()).filter(Boolean)).size,
+      totalBags: filteredLaadItems.reduce((sum, item) => sum + (item.totalBags || 0), 0),
+      totalAmount: filteredLaadItems.reduce((sum, item) => sum + (parseFloat(item.totalAmount) || 0), 0),
+      totalWeight: filteredLaadItems.reduce((sum, item) => {
+        const weight = item.faisalabadWeight || item.weightFromJacobabad || 0;
+        return sum + (parseFloat(weight) || 0);
+      }, 0),
+    };
+
+    // Calculate outgoing summary (from sales)
+    const outgoingSummary = {
+      totalSales: sales.length,
+      totalBagsSold: sales.reduce((sum, sale) => sum + (sale.bagsSold || 0), 0),
+      totalRevenue: sales.reduce((sum, sale) => {
+        const amount = parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0));
+        return sum + amount;
+      }, 0),
+      uniqueCustomers: new Set(sales.map(s => s.customerId?._id?.toString()).filter(Boolean)).size,
+    };
+
+    // Calculate current stock
+    const currentStock = filteredLaadItems.reduce((sum, item) => sum + (item.remainingBags || 0), 0);
+
+    // Format incoming records (grouped by laad)
+    const incomingRecords = [];
+    const laadMap = new Map();
+
+    filteredLaadItems.forEach(laadItem => {
+      const laadId = laadItem.laadId?._id?.toString();
+      if (!laadId) return;
+
+      if (!laadMap.has(laadId)) {
+        laadMap.set(laadId, {
+          laadNumber: laadItem.laadId?.laadNumber || 'N/A',
+          arrivalDate: laadItem.laadId?.arrivalDate || null,
+          supplierName: laadItem.laadId?.supplierId?.name || 'Unknown',
+          vehicleNumber: laadItem.laadId?.vehicleNumber || null,
+          gatePassNumber: laadItem.laadId?.gatePassNumber || null,
+          items: [],
+        });
+      }
+
+      const laadRecord = laadMap.get(laadId);
+      laadRecord.items.push({
+        id: laadItem.id || laadItem._id.toString(),
+        qualityGrade: laadItem.qualityGrade || 'N/A',
+        totalBags: laadItem.totalBags || 0,
+        remainingBags: laadItem.remainingBags || 0,
+        soldBags: (laadItem.totalBags || 0) - (laadItem.remainingBags || 0),
+        weightPerBag: laadItem.weightPerBag || null,
+        weightFromJacobabad: laadItem.weightFromJacobabad || null,
+        faisalabadWeight: laadItem.faisalabadWeight || null,
+        ratePerBag: parseFloat(laadItem.ratePerBag) || 0,
+        totalAmount: parseFloat(laadItem.totalAmount) || 0,
+      });
+    });
+
+    incomingRecords.push(...Array.from(laadMap.values()));
+
+    // Format outgoing sales
+    const outgoingSales = sales.map(sale => ({
+      id: sale._id.toString(),
+      date: sale.date || sale.createdAt,
+      customerName: sale.customerId?.name || 'Unknown',
+      customerContact: sale.customerId?.contact || null,
+      laadNumber: sale.laadNumber || sale.laadItemId?.laadId?.laadNumber || 'N/A',
+      qualityGrade: sale.qualityGrade || sale.laadItemId?.qualityGrade || 'N/A',
+      bagsSold: sale.bagsSold || 0,
+      bagWeight: sale.bagWeight || null,
+      ratePerBag: parseFloat(sale.ratePerBag) || 0,
+      totalAmount: parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0)),
+      gatePassNumber: sale.gatePassNumber || null,
+      truckNumber: sale.truckNumber || null,
+      address: sale.address || null,
+      brokerName: sale.brokerName || null,
+      isMixOrder: sale.isMixOrder || false,
+    }));
+
+    return res.json({
+      success: true,
+      data: {
+        item: {
+          id: item.id || item._id.toString(),
+          name: item.name,
+          quality: item.quality,
+        },
+        summary: {
+          currentStock,
+          ...incomingSummary,
+          ...outgoingSummary,
+        },
+        incoming: {
+          summary: incomingSummary,
+          records: incomingRecords,
+        },
+        outgoing: {
+          summary: outgoingSummary,
+          sales: outgoingSales,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching item report:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to fetch item report',
     });
   }
 };
