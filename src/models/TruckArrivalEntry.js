@@ -56,7 +56,7 @@ const truckArrivalEntrySchema = new mongoose.Schema({
     totalAmount: Number,
     status: {
       type: String,
-      enum: ['ADDED', 'DUPLICATE_SKIPPED'],
+      enum: ['ADDED', 'UPDATED', 'DUPLICATE_SKIPPED'], // UPDATED = combined with existing item
       default: 'ADDED'
     },
     laadItemId: {

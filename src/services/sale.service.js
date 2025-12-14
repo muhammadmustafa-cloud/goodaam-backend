@@ -4,6 +4,7 @@ const LaadItem = require('../models/LaadItem');
 const Item = require('../models/Item');
 const Laad = require('../models/Laad');
 const Supplier = require('../models/Supplier');
+const TruckArrivalEntry = require('../models/TruckArrivalEntry');
 const { convertToObjectId } = require('../utils/convertId');
 
 const toId = (doc) => {
@@ -158,12 +159,94 @@ exports.createSale = async (payload) => {
       matchingLaadItems.sort((a, b) => (b.remainingBags || 0) - (a.remainingBags || 0));
       
       // Calculate total available stock from all matching items
-      const totalAvailable = matchingLaadItems.reduce((sum, item) => sum + (item.remainingBags || 0), 0);
+      let totalAvailable = matchingLaadItems.reduce((sum, item) => sum + (item.remainingBags || 0), 0);
+      
+      // Also include DUPLICATE_SKIPPED items from TruckArrivalEntry that match this item
+      // These are bags that were skipped but should still be available for sale
+      let skippedBagsTotal = 0;
+      const laadIdForSkipped = selectedLaadItem.laadId?._id || selectedLaadItem.laadId;
+      if (laadIdForSkipped) {
+        const truckArrivalEntries = await TruckArrivalEntry.find({
+          laadId: laadIdForSkipped
+        })
+          .populate('items.itemId')
+          .lean();
+        
+        truckArrivalEntries.forEach((entry) => {
+          if (!entry.items || entry.items.length === 0) return;
+          
+          entry.items.forEach((entryItem) => {
+            // Only count DUPLICATE_SKIPPED items
+            if (entryItem.status !== 'DUPLICATE_SKIPPED') return;
+            if (!entryItem.itemId) return;
+            
+            const entryItemId = entryItem.itemId._id?.toString() || entryItem.itemId.toString();
+            const selectedItemId = selectedLaadItem.itemId._id?.toString() || selectedLaadItem.itemId.toString();
+            
+            // Match by item ID and quality grade
+            if (entryItemId === selectedItemId) {
+              const entryQualityGrade = (entryItem.qualityGrade || '').trim();
+              const selectedQualityGrade = (selectedLaadItem.qualityGrade || '').trim();
+              
+              if (entryQualityGrade === selectedQualityGrade) {
+                // This skipped item matches - add its bags to available stock
+                const skippedBags = parseInt(entryItem.totalBags) || 0;
+                skippedBagsTotal += skippedBags;
+                totalAvailable += skippedBags;
+              }
+            }
+          });
+        });
+      }
       
       if (totalAvailable < bagsSold) {
         const e = new Error(`Insufficient stock. Available: ${totalAvailable} bags, Requested: ${bagsSold} bags`);
         e.status = 400; 
         throw e;
+      }
+      
+      // If we have skipped bags, add them to the best matching LaadItem first
+      // This ensures the LaadItem has enough stock for the sale
+      if (skippedBagsTotal > 0 && matchingLaadItems.length > 0) {
+        // Find the best LaadItem (one with most stock)
+        let bestItemForSkipped = matchingLaadItems[0];
+        for (const item of matchingLaadItems) {
+          if (item.remainingBags > bestItemForSkipped.remainingBags) {
+            bestItemForSkipped = item;
+          }
+        }
+        
+        // Add skipped bags to this LaadItem
+        await LaadItem.findByIdAndUpdate(
+          bestItemForSkipped._id,
+          {
+            $inc: {
+              remainingBags: skippedBagsTotal,
+              totalBags: skippedBagsTotal
+            }
+          }
+        );
+        
+        // Refresh matching items to get updated remainingBags
+        const refreshedItems = await LaadItem.find({
+          laadId: selectedLaadItem.laadId,
+          remainingBags: { $gt: 0 }
+        })
+          .populate('itemId')
+          .lean();
+        
+        // Re-filter and update matchingLaadItems
+        matchingLaadItems.length = 0;
+        refreshedItems.forEach(item => {
+          const itemItemName = (item.itemId?.name || '').trim().toLowerCase();
+          const itemQualityGrade = (item.qualityGrade || '').trim();
+          if (itemItemName === itemName && itemQualityGrade === qualityGrade) {
+            matchingLaadItems.push(item);
+          }
+        });
+        
+        // Re-sort
+        matchingLaadItems.sort((a, b) => (b.remainingBags || 0) - (a.remainingBags || 0));
       }
       
       // Find the best LaadItem to use (one with enough stock, or the one with most stock)

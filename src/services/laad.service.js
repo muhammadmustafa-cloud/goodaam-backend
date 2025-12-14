@@ -102,19 +102,69 @@ exports.createLaadWithItems = async (payload) => {
       
       let laadItemId = null;
       let itemStatus = 'ADDED';
+      let laadItem = null;
       
-      // Check for duplicate - skip if already exists in laad
+      // Check for duplicate - SUM UP if already exists in laad (same item + same quality)
       if (duplicateCheckMap.has(duplicateKey)) {
-        console.log(`Skipping duplicate item: itemId=${itemObjectId}, qualityGrade=${qualityGrade}`);
-        itemStatus = 'DUPLICATE_SKIPPED';
-        // Still track it in truck arrival entry
+        // Existing item found - UPDATE it by adding new bags
+        const existingItem = duplicateCheckMap.get(duplicateKey);
+        const newBags = parseInt(it.totalBags) || 0;
+        const existingTotalBags = existingItem.totalBags || 0;
+        const existingRemainingBags = existingItem.remainingBags || 0;
+        
+        // Sum up the bags
+        existingItem.totalBags = existingTotalBags + newBags;
+        existingItem.remainingBags = existingRemainingBags + newBags; // Add to remaining as well
+        
+        // Update weight if provided (use average or new value if existing is null)
+        if (it.weightPerBag) {
+          // If existing weight is null, use new weight
+          // If both exist, keep existing (or could calculate weighted average)
+          if (!existingItem.weightPerBag) {
+            existingItem.weightPerBag = parseFloat(it.weightPerBag);
+          }
+        }
+        
+        // Update weight from Jacobabad if provided
+        if (it.weightFromJacobabad) {
+          const newWeight = parseFloat(it.weightFromJacobabad);
+          const existingWeight = existingItem.weightFromJacobabad || 0;
+          existingItem.weightFromJacobabad = existingWeight + newWeight; // Sum weights
+        }
+        
+        // Update Faisalabad weight if provided
+        if (it.faisalabadWeight) {
+          const newWeight = parseFloat(it.faisalabadWeight);
+          const existingWeight = existingItem.faisalabadWeight || 0;
+          existingItem.faisalabadWeight = existingWeight + newWeight; // Sum weights
+        }
+        
+        // Update rate if provided (use new rate if existing is null, or keep existing)
+        if (it.ratePerBag && !existingItem.ratePerBag) {
+          existingItem.ratePerBag = parseFloat(it.ratePerBag);
+        }
+        
+        // Recalculate totalAmount
+        if (existingItem.ratePerBag && existingItem.totalBags) {
+          existingItem.totalAmount = parseFloat(existingItem.ratePerBag) * existingItem.totalBags;
+        }
+        
+        // Save updated item
+        await existingItem.save();
+        laadItem = existingItem;
+        laadItemId = existingItem._id;
+        laadItems.push(existingItem);
+        itemStatus = 'UPDATED'; // Mark as updated instead of skipped
+        
+        console.log(`Updated existing item: ${itemName} - Quality: ${qualityGrade} - Added ${newBags} bags. New total: ${existingItem.totalBags} bags`);
       } else {
+        // New item - create it
         // Auto-calculate totalAmount if ratePerBag is provided
         const totalAmount = it.ratePerBag && it.totalBags 
           ? parseFloat(it.ratePerBag) * parseInt(it.totalBags)
           : null;
 
-        const laadItem = new LaadItem({
+        laadItem = new LaadItem({
           laadId: laad._id, // Add to laad (existing or new)
           itemId: itemObjectId,
           totalBags: it.totalBags,
@@ -134,20 +184,23 @@ exports.createLaadWithItems = async (payload) => {
         duplicateCheckMap.set(duplicateKey, laadItem);
       }
       
-      // Add to truck arrival entry items (track all items, even duplicates)
+      // Add to truck arrival entry items (track all items, including updates)
       truckArrivalItems.push({
         itemId: itemObjectId,
         itemName,
         itemQuality,
-        totalBags: bags,
+        totalBags: bags, // Bags added in this entry
         qualityGrade: qualityGrade || null,
         weightPerBag: it.weightPerBag ? parseFloat(it.weightPerBag) : null,
         weightFromJacobabad: it.weightFromJacobabad ? parseFloat(it.weightFromJacobabad) : null,
         faisalabadWeight: it.faisalabadWeight ? parseFloat(it.faisalabadWeight) : null,
         ratePerBag: it.ratePerBag ? parseFloat(it.ratePerBag) : null,
         totalAmount: it.ratePerBag && bags ? parseFloat(it.ratePerBag) * bags : null,
-        status: itemStatus,
-        laadItemId
+        status: itemStatus, // 'ADDED' for new items, 'UPDATED' for existing items
+        laadItemId,
+        // Store final totals after update (for audit trail)
+        finalTotalBags: laadItem ? laadItem.totalBags : bags,
+        finalRemainingBags: laadItem ? laadItem.remainingBags : (it.remainingBags ?? bags)
       });
     }
 
@@ -177,6 +230,12 @@ exports.createLaadWithItems = async (payload) => {
       .populate('itemId')
       .lean();
 
+    // Count items by status for summary
+    const itemsSummary = {
+      added: truckArrivalItems.filter(item => item.status === 'ADDED').length,
+      updated: truckArrivalItems.filter(item => item.status === 'UPDATED').length,
+    };
+
     // Transform to match frontend expectations
     return {
       ...populatedLaad,
@@ -200,7 +259,14 @@ exports.createLaadWithItems = async (payload) => {
           quality: item.itemId.quality || '',
           bagWeight: item.itemId.bagWeight || 0
         } : { id: null, name: 'Unknown', quality: '', bagWeight: 0 }
-      }))
+      })),
+      // Include summary for frontend
+      itemsSummary: itemsSummary,
+      truckArrivalEntry: {
+        totalBags,
+        totalWeight,
+        itemsCount: truckArrivalItems.length,
+      }
     };
   } catch (error) {
     throw error;
@@ -450,11 +516,51 @@ exports.updateLaadWithItems = async (id, payload) => {
       }
       await existing.save();
     } 
-    // Check for duplicate (same itemId + qualityGrade) - skip if duplicate
+    // Check for duplicate (same itemId + qualityGrade) - SUM UP if duplicate
     else if (duplicateCheckMap.has(duplicateKey)) {
-      // Duplicate item found - skip adding it
-      console.log(`Skipping duplicate item: itemId=${itemObjectId}, qualityGrade=${qualityGrade}`);
-      continue; // Skip this item, don't create duplicate
+      // Duplicate item found - UPDATE it by adding new bags
+      const existingItem = duplicateCheckMap.get(duplicateKey);
+      const newBags = totalBags;
+      const existingTotalBags = existingItem.totalBags || 0;
+      const existingRemainingBags = existingItem.remainingBags || 0;
+      
+      // Sum up the bags
+      existingItem.totalBags = existingTotalBags + newBags;
+      existingItem.remainingBags = existingRemainingBags + newBags; // Add to remaining as well
+      
+      // Update weight if provided
+      if (updateData.weightPerBag && !existingItem.weightPerBag) {
+        existingItem.weightPerBag = updateData.weightPerBag;
+      }
+      
+      // Update weight from Jacobabad if provided
+      if (updateData.weightFromJacobabad) {
+        const newWeight = updateData.weightFromJacobabad;
+        const existingWeight = existingItem.weightFromJacobabad || 0;
+        existingItem.weightFromJacobabad = existingWeight + newWeight; // Sum weights
+      }
+      
+      // Update Faisalabad weight if provided
+      if (updateData.faisalabadWeight) {
+        const newWeight = updateData.faisalabadWeight;
+        const existingWeight = existingItem.faisalabadWeight || 0;
+        existingItem.faisalabadWeight = existingWeight + newWeight; // Sum weights
+      }
+      
+      // Update rate if provided (use new rate if existing is null)
+      if (updateData.ratePerBag && !existingItem.ratePerBag) {
+        existingItem.ratePerBag = updateData.ratePerBag;
+      }
+      
+      // Recalculate totalAmount
+      if (existingItem.ratePerBag && existingItem.totalBags) {
+        existingItem.totalAmount = parseFloat(existingItem.ratePerBag) * existingItem.totalBags;
+      }
+      
+      // Save updated item
+      await existingItem.save();
+      console.log(`Updated existing item: itemId=${itemObjectId}, qualityGrade=${qualityGrade} - Added ${newBags} bags. New total: ${existingItem.totalBags} bags`);
+      continue; // Continue to next item
     }
     // New item - add it
     else {

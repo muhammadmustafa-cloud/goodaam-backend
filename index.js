@@ -19,6 +19,7 @@ const financialRoutes = require('./src/routes/financial.routes');
 const vehicleRoutes = require('./src/routes/vehicle.routes');
 const reportsRoutes = require('./src/routes/reports.routes');
 const truckArrivalEntryRoutes = require('./src/routes/truckArrivalEntry.routes');
+const stockRoutes = require('./src/routes/stock.routes');
 // Migration routes removed - MongoDB doesn't need SQL migrations (schema is in Mongoose models)
 
 // Import middleware
@@ -125,6 +126,7 @@ app.use(`${API_VERSION}/financial`, financialRoutes);
 app.use(`${API_VERSION}/vehicles`, vehicleRoutes);
 app.use(`${API_VERSION}/reports`, reportsRoutes);
 app.use(`${API_VERSION}/truck-arrival-entries`, truckArrivalEntryRoutes);
+app.use(`${API_VERSION}/stock`, stockRoutes);
 
 // Backward compatibility - redirect old routes to new versioned routes
 app.use('/api/items', itemRoutes);
@@ -138,6 +140,7 @@ app.use('/api/financial', financialRoutes);
 app.use('/api/vehicles', vehicleRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/truck-arrival-entries', truckArrivalEntryRoutes);
+app.use('/api/stock', stockRoutes);
 // Migration routes removed - MongoDB doesn't need SQL migrations
 
 
