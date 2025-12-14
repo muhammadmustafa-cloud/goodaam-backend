@@ -15,6 +15,7 @@ router.post('/', writeLimiter, validateLaad, laadController.createLaad);
 router.put('/:id', validateObjectId, writeLimiter, validateLaad, laadController.updateLaad);
 router.delete('/:id', validateObjectId, writeLimiter, laadController.deleteLaad);
 router.get('/', laadController.getLaads);
+router.get('/by-number/:laadNumber', laadController.getLaadByLaadNumber);
 router.get('/:id', validateObjectId, laadController.getLaadById);
 
 module.exports = router;

@@ -103,17 +103,124 @@ exports.createSale = async (payload) => {
       throw e;
     }
 
-    // Atomically check & decrement stock to prevent overselling under concurrency
-    const laadItem = await LaadItem.findOneAndUpdate(
-      { _id: laadItemObjectId, remainingBags: { $gte: bagsSold } },
-      { $inc: { remainingBags: -bagsSold } },
-      { new: true }
-    ).populate('laadId');
+    // First, get the selected LaadItem to find matching items
+    const selectedLaadItem = await LaadItem.findById(laadItemObjectId)
+      .populate('itemId')
+      .populate('laadId')
+      .lean();
     
-    if (!laadItem) {
-      const e = new Error(`Insufficient stock or LaadItem ${laadItemId} not found`);
+    if (!selectedLaadItem) {
+      const e = new Error(`LaadItem ${laadItemId} not found`);
+      e.status = 404; 
+      throw e;
+    }
+
+    // If selected LaadItem doesn't have enough stock, find all matching LaadItems
+    // (same itemId + qualityGrade + laadId) and use the best one
+    let laadItem = null;
+    let finalLaadItemId = laadItemObjectId;
+    
+    if (selectedLaadItem.remainingBags >= bagsSold) {
+      // Selected item has enough stock - use it
+      laadItem = await LaadItem.findOneAndUpdate(
+        { _id: laadItemObjectId, remainingBags: { $gte: bagsSold } },
+        { $inc: { remainingBags: -bagsSold } },
+        { new: true }
+      ).populate('laadId');
+      
+      if (!laadItem) {
+        const e = new Error(`Insufficient stock for LaadItem ${laadItemId}`);
+        e.status = 400; 
+        throw e;
+      }
+    } else {
+      // Selected item doesn't have enough - find all matching LaadItems
+      // Match by: same laadId + same item name + same qualityGrade
+      const qualityGrade = (selectedLaadItem.qualityGrade || '').trim();
+      const itemName = (selectedLaadItem.itemId?.name || '').trim().toLowerCase();
+      
+      // First, find all LaadItems in the same laad
+      const allLaadItemsInLaad = await LaadItem.find({
+        laadId: selectedLaadItem.laadId,
+        remainingBags: { $gt: 0 }
+      })
+        .populate('itemId')
+        .lean();
+      
+      // Filter to match by item name + qualityGrade (not by itemId)
+      const matchingLaadItems = allLaadItemsInLaad.filter(item => {
+        const itemItemName = (item.itemId?.name || '').trim().toLowerCase();
+        const itemQualityGrade = (item.qualityGrade || '').trim();
+        return itemItemName === itemName && itemQualityGrade === qualityGrade;
+      });
+      
+      // Sort by remainingBags (most stock first)
+      matchingLaadItems.sort((a, b) => (b.remainingBags || 0) - (a.remainingBags || 0));
+      
+      // Calculate total available stock from all matching items
+      const totalAvailable = matchingLaadItems.reduce((sum, item) => sum + (item.remainingBags || 0), 0);
+      
+      if (totalAvailable < bagsSold) {
+        const e = new Error(`Insufficient stock. Available: ${totalAvailable} bags, Requested: ${bagsSold} bags`);
+        e.status = 400; 
+        throw e;
+      }
+      
+      // Find the best LaadItem to use (one with enough stock, or the one with most stock)
+      let bestItem = null;
+      let remainingBagsToSell = bagsSold;
+      
+      for (const item of matchingLaadItems) {
+        if (item.remainingBags >= bagsSold) {
+          // This item has enough stock - use it
+          bestItem = item;
+          remainingBagsToSell = bagsSold;
+          break;
+        } else if (!bestItem || item.remainingBags > bestItem.remainingBags) {
+          // Track the item with most stock as fallback
+          bestItem = item;
+        }
+      }
+      
+      if (!bestItem) {
+        const e = new Error(`No suitable LaadItem found for sale`);
+        e.status = 400; 
+        throw e;
+      }
+      
+      // Use the best item for the sale
+      finalLaadItemId = bestItem._id;
+      const bagsToSellFromBest = Math.min(bagsSold, bestItem.remainingBags);
+      
+      laadItem = await LaadItem.findOneAndUpdate(
+        { _id: bestItem._id, remainingBags: { $gte: bagsToSellFromBest } },
+        { $inc: { remainingBags: -bagsToSellFromBest } },
+        { new: true }
+      ).populate('laadId');
+      
+      if (!laadItem) {
+        const e = new Error(`Failed to update stock for LaadItem ${bestItem._id}`);
       e.status = 400; 
       throw e;
+      }
+      
+      // If we need more bags, update other matching items
+      remainingBagsToSell = bagsSold - bagsToSellFromBest;
+      if (remainingBagsToSell > 0) {
+        for (const item of matchingLaadItems) {
+          if (item._id.toString() === bestItem._id.toString()) continue; // Skip the one we already used
+          
+          const bagsFromThisItem = Math.min(remainingBagsToSell, item.remainingBags);
+          if (bagsFromThisItem > 0) {
+            await LaadItem.findOneAndUpdate(
+              { _id: item._id, remainingBags: { $gte: bagsFromThisItem } },
+              { $inc: { remainingBags: -bagsFromThisItem } }
+            );
+            remainingBagsToSell -= bagsFromThisItem;
+            if (remainingBagsToSell <= 0) break;
+          }
+        }
+      }
     }
 
     // Auto-calculate totalAmount if ratePerBag is provided
@@ -140,10 +247,10 @@ exports.createSale = async (payload) => {
       }
     }
 
-    // Create sale
+    // Create sale (use finalLaadItemId which may be different from selected if we found a better match)
     const sale = new Sale({
       customerId: customerObjectId,
-      laadItemId: laadItemObjectId,
+      laadItemId: finalLaadItemId, // Use the actual LaadItem used for the sale
       bagsSold,
       bagWeight: parseFloat(bagWeight),
       ratePerBag: ratePerBag ? parseFloat(ratePerBag) : null,

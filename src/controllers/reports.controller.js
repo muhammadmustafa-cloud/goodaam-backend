@@ -5,6 +5,7 @@ const Sale = require('../models/Sale');
 const Laad = require('../models/Laad');
 const LaadItem = require('../models/LaadItem');
 const Item = require('../models/Item');
+const TruckArrivalEntry = require('../models/TruckArrivalEntry');
 
 /**
  * Customer Ledger - Shows all transactions and outstanding balance (Baqaya)
@@ -607,18 +608,7 @@ exports.getLaadReport = async (req, res) => {
       .sort({ date: -1, createdAt: -1 })
       .lean();
 
-    // Calculate incoming summary
-    const incomingSummary = {
-      totalItems: laadItems.length,
-      totalBags: laadItems.reduce((sum, item) => sum + (item.totalBags || 0), 0),
-      totalAmount: laadItems.reduce((sum, item) => sum + (parseFloat(item.totalAmount) || 0), 0),
-      totalWeight: laadItems.reduce((sum, item) => {
-        const weight = item.faisalabadWeight || item.weightFromJacobabad || 0;
-        return sum + (parseFloat(weight) || 0);
-      }, 0),
-    };
-
-    // Calculate outgoing summary
+    // Calculate outgoing summary first (needed for weight calculations)
     const outgoingSummary = {
       totalSales: sales.length,
       totalBagsSold: sales.reduce((sum, sale) => sum + (sale.bagsSold || 0), 0),
@@ -629,23 +619,56 @@ exports.getLaadReport = async (req, res) => {
       uniqueCustomers: new Set(sales.map(s => s.customerId?._id?.toString()).filter(Boolean)).size,
     };
 
-    // Format incoming items
-    const incomingItems = laadItems.map(item => ({
-      id: item.id || item._id.toString(),
-      itemName: item.itemId?.name || 'Unknown',
-      itemQuality: item.itemId?.quality || 'N/A',
-      qualityGrade: item.qualityGrade || 'N/A',
-      totalBags: item.totalBags || 0,
-      remainingBags: item.remainingBags || 0,
-      soldBags: (item.totalBags || 0) - (item.remainingBags || 0),
-      weightPerBag: item.weightPerBag || null,
-      weightFromJacobabad: item.weightFromJacobabad || null,
-      faisalabadWeight: item.faisalabadWeight || null,
-      ratePerBag: parseFloat(item.ratePerBag) || 0,
-      totalAmount: parseFloat(item.totalAmount) || 0,
+    // Calculate weight tracking for each item
+    const incomingItems = await Promise.all(laadItems.map(async (item) => {
+      // Calculate total weight for this item
+      const totalWeight = item.faisalabadWeight || item.weightFromJacobabad || 
+        (item.weightPerBag && item.totalBags ? item.weightPerBag * item.totalBags : null);
+      
+      // Get all sales for this specific laadItem to calculate sold weight
+      const itemSales = sales.filter(sale => 
+        sale.laadItemId?._id?.toString() === item._id.toString()
+      );
+      
+      // Calculate sold weight (sum of bagsSold * bagWeight from sales)
+      const soldWeight = itemSales.reduce((sum, sale) => {
+        const saleWeight = (sale.bagsSold || 0) * (parseFloat(sale.bagWeight) || 0);
+        return sum + saleWeight;
+      }, 0);
+      
+      // Calculate remaining weight
+      const remainingWeight = totalWeight ? totalWeight - soldWeight : null;
+      
+      return {
+        id: item.id || item._id.toString(),
+        itemName: item.itemId?.name || 'Unknown',
+        itemQuality: item.itemId?.quality || 'N/A',
+        qualityGrade: item.qualityGrade || 'N/A',
+        totalBags: item.totalBags || 0,
+        remainingBags: item.remainingBags || 0,
+        soldBags: (item.totalBags || 0) - (item.remainingBags || 0),
+        weightPerBag: item.weightPerBag || null,
+        weightFromJacobabad: item.weightFromJacobabad || null,
+        faisalabadWeight: item.faisalabadWeight || null,
+        totalWeight: totalWeight,
+        soldWeight: soldWeight > 0 ? soldWeight : null,
+        remainingWeight: remainingWeight,
+        ratePerBag: parseFloat(item.ratePerBag) || 0,
+        totalAmount: parseFloat(item.totalAmount) || 0,
+      };
     }));
 
-    // Format outgoing sales
+    // Calculate incoming summary with weight tracking
+    const incomingSummary = {
+      totalItems: incomingItems.length,
+      totalBags: incomingItems.reduce((sum, item) => sum + (item.totalBags || 0), 0),
+      totalAmount: incomingItems.reduce((sum, item) => sum + (item.totalAmount || 0), 0),
+      totalWeight: incomingItems.reduce((sum, item) => sum + (item.totalWeight || 0), 0),
+      soldWeight: incomingItems.reduce((sum, item) => sum + (item.soldWeight || 0), 0),
+      remainingWeight: incomingItems.reduce((sum, item) => sum + (item.remainingWeight || 0), 0),
+    };
+
+    // Calculate outgoing summary
     const outgoingSales = sales.map(sale => ({
       id: sale._id.toString(),
       date: sale.date || sale.createdAt,
@@ -792,15 +815,42 @@ exports.getItemReport = async (req, res) => {
       .sort({ date: -1, createdAt: -1 })
       .lean();
 
-    // Calculate incoming summary (from laads)
+    // Calculate weight tracking for each laadItem
+    const laadItemsWithWeight = await Promise.all(filteredLaadItems.map(async (laadItem) => {
+      // Calculate total weight for this laadItem
+      const totalWeight = laadItem.faisalabadWeight || laadItem.weightFromJacobabad || 
+        (laadItem.weightPerBag && laadItem.totalBags ? laadItem.weightPerBag * laadItem.totalBags : null);
+      
+      // Get all sales for this specific laadItem to calculate sold weight
+      const itemSales = sales.filter(sale => 
+        sale.laadItemId?._id?.toString() === laadItem._id.toString()
+      );
+      
+      // Calculate sold weight (sum of bagsSold * bagWeight from sales)
+      const soldWeight = itemSales.reduce((sum, sale) => {
+        const saleWeight = (sale.bagsSold || 0) * (parseFloat(sale.bagWeight) || 0);
+        return sum + saleWeight;
+      }, 0);
+      
+      // Calculate remaining weight
+      const remainingWeight = totalWeight ? totalWeight - soldWeight : null;
+      
+      return {
+        ...laadItem,
+        totalWeight: totalWeight,
+        soldWeight: soldWeight > 0 ? soldWeight : null,
+        remainingWeight: remainingWeight,
+      };
+    }));
+
+    // Calculate incoming summary (from laads) with weight tracking
     const incomingSummary = {
-      totalLaads: new Set(filteredLaadItems.map(li => li.laadId?._id?.toString()).filter(Boolean)).size,
-      totalBags: filteredLaadItems.reduce((sum, item) => sum + (item.totalBags || 0), 0),
-      totalAmount: filteredLaadItems.reduce((sum, item) => sum + (parseFloat(item.totalAmount) || 0), 0),
-      totalWeight: filteredLaadItems.reduce((sum, item) => {
-        const weight = item.faisalabadWeight || item.weightFromJacobabad || 0;
-        return sum + (parseFloat(weight) || 0);
-      }, 0),
+      totalLaads: new Set(laadItemsWithWeight.map(li => li.laadId?._id?.toString()).filter(Boolean)).size,
+      totalBags: laadItemsWithWeight.reduce((sum, item) => sum + (item.totalBags || 0), 0),
+      totalAmount: laadItemsWithWeight.reduce((sum, item) => sum + (parseFloat(item.totalAmount) || 0), 0),
+      totalWeight: laadItemsWithWeight.reduce((sum, item) => sum + (item.totalWeight || 0), 0),
+      soldWeight: laadItemsWithWeight.reduce((sum, item) => sum + (item.soldWeight || 0), 0),
+      remainingWeight: laadItemsWithWeight.reduce((sum, item) => sum + (item.remainingWeight || 0), 0),
     };
 
     // Calculate outgoing summary (from sales)
@@ -815,43 +865,136 @@ exports.getItemReport = async (req, res) => {
     };
 
     // Calculate current stock
-    const currentStock = filteredLaadItems.reduce((sum, item) => sum + (item.remainingBags || 0), 0);
+    const currentStock = laadItemsWithWeight.reduce((sum, item) => sum + (item.remainingBags || 0), 0);
 
-    // Format incoming records (grouped by laad)
+    // Get all TruckArrivalEntry records for this item to show ALL submissions (including duplicates)
+    const truckArrivalDateFilter = {};
+    if (startDate || endDate) {
+      truckArrivalDateFilter.arrivalDate = {};
+      if (startDate) truckArrivalDateFilter.arrivalDate.$gte = new Date(startDate);
+      if (endDate) truckArrivalDateFilter.arrivalDate.$lte = new Date(endDate);
+    }
+
+    // Get all laad IDs that contain this item
+    const laadIdsWithItem = filteredLaadItems.map(li => li.laadId?._id).filter(Boolean);
+    
+    // Get all TruckArrivalEntry records for these laads
+    const truckArrivalEntries = await TruckArrivalEntry.find({
+      laadId: { $in: laadIdsWithItem },
+      ...truckArrivalDateFilter
+    })
+      .populate('supplierId', 'name contact')
+      .populate('laadId', 'laadNumber arrivalDate vehicleNumber')
+      .populate('items.itemId', 'name quality') // Populate itemId in items array
+      .sort({ arrivalDate: -1, createdAt: -1 })
+      .lean();
+
+    // Format incoming records - Include both LaadItems (actual stock) and TruckArrivalEntry items (all submissions)
     const incomingRecords = [];
-    const laadMap = new Map();
+    const truckArrivalRecordMap = new Map(); // To track which truck arrival entries we've processed
 
-    filteredLaadItems.forEach(laadItem => {
-      const laadId = laadItem.laadId?._id?.toString();
-      if (!laadId) return;
+    // Create a map of LaadItem IDs to track which items are already in stock
+    const laadItemMap = new Map();
+    laadItemsWithWeight.forEach((laadItem) => {
+      const key = `${laadItem.laadId?._id?.toString() || ''}-${laadItem.qualityGrade || ''}`;
+      laadItemMap.set(key, laadItem);
+    });
 
-      if (!laadMap.has(laadId)) {
-        laadMap.set(laadId, {
-          laadNumber: laadItem.laadId?.laadNumber || 'N/A',
-          arrivalDate: laadItem.laadId?.arrivalDate || null,
-          supplierName: laadItem.laadId?.supplierId?.name || 'Unknown',
-          vehicleNumber: laadItem.laadId?.vehicleNumber || null,
-          gatePassNumber: laadItem.laadId?.gatePassNumber || null,
-          items: [],
+    // First, add only TruckArrivalEntry items that are DUPLICATE_SKIPPED (these don't have LaadItems)
+    // For ADDED items, we'll show the LaadItem instead to avoid duplicates
+    truckArrivalEntries.forEach((entry) => {
+      if (!entry.items || entry.items.length === 0) return;
+      
+      entry.items.forEach((entryItem) => {
+        // Check if this item matches our target item
+        let entryItemId;
+        if (entryItem.itemId) {
+          // Handle both ObjectId and string formats
+          if (typeof entryItem.itemId === 'object' && entryItem.itemId._id) {
+            entryItemId = entryItem.itemId._id.toString();
+          } else if (typeof entryItem.itemId === 'object' && entryItem.itemId.toString) {
+            entryItemId = entryItem.itemId.toString();
+          } else {
+            entryItemId = entryItem.itemId.toString ? entryItem.itemId.toString() : String(entryItem.itemId);
+          }
+        } else {
+          return; // Skip if no itemId
+        }
+        const targetItemId = item._id.toString();
+        if (entryItemId !== targetItemId) return;
+
+        // Only show TruckArrivalEntry items that are DUPLICATE_SKIPPED
+        // For ADDED items, the LaadItem will be shown instead
+        if (entryItem.status !== 'DUPLICATE_SKIPPED') {
+          return; // Skip ADDED items - they'll be shown as LaadItems
+        }
+
+        const uniqueKey = `${entry._id.toString()}-${entryItem.itemId?.toString() || ''}-${entryItem.qualityGrade || ''}`;
+        if (truckArrivalRecordMap.has(uniqueKey)) return; // Skip if already added
+        truckArrivalRecordMap.set(uniqueKey, true);
+
+        // Calculate weight for this entry item
+        const entryTotalWeight = entryItem.faisalabadWeight || entryItem.weightFromJacobabad || 
+          (entryItem.weightPerBag && entryItem.totalBags ? entryItem.weightPerBag * entryItem.totalBags : null);
+
+        incomingRecords.push({
+          laadNumber: entry.laadNumber || entry.laadId?.laadNumber || 'N/A',
+          arrivalDate: entry.arrivalDate || entry.laadId?.arrivalDate || null,
+          supplierName: entry.supplierId?.name || entry.supplier?.name || 'Unknown',
+          vehicleNumber: entry.laadId?.vehicleNumber || null,
+          gatePassNumber: entry.gatePassNumber || null,
+          isTruckArrivalEntry: true, // Flag to identify truck arrival entries
+          entryStatus: entryItem.status || 'DUPLICATE_SKIPPED', // Status from truck arrival entry
+          items: [{
+            id: `truck-entry-${entry._id.toString()}-${entryItem.itemId?.toString() || ''}`,
+            qualityGrade: entryItem.qualityGrade || 'N/A',
+            totalBags: entryItem.totalBags || 0,
+            remainingBags: 0, // Duplicates don't add to stock
+            soldBags: 0, // Duplicates can't be sold
+            weightPerBag: entryItem.weightPerBag || null,
+            weightFromJacobabad: entryItem.weightFromJacobabad || null,
+            faisalabadWeight: entryItem.faisalabadWeight || null,
+            totalWeight: entryTotalWeight,
+            soldWeight: null, // Duplicates can't be sold
+            remainingWeight: 0, // Duplicates don't add to stock
+            ratePerBag: parseFloat(entryItem.ratePerBag) || 0,
+            totalAmount: parseFloat(entryItem.totalAmount) || 0,
+          }],
         });
-      }
-
-      const laadRecord = laadMap.get(laadId);
-      laadRecord.items.push({
-        id: laadItem.id || laadItem._id.toString(),
-        qualityGrade: laadItem.qualityGrade || 'N/A',
-        totalBags: laadItem.totalBags || 0,
-        remainingBags: laadItem.remainingBags || 0,
-        soldBags: (laadItem.totalBags || 0) - (laadItem.remainingBags || 0),
-        weightPerBag: laadItem.weightPerBag || null,
-        weightFromJacobabad: laadItem.weightFromJacobabad || null,
-        faisalabadWeight: laadItem.faisalabadWeight || null,
-        ratePerBag: parseFloat(laadItem.ratePerBag) || 0,
-        totalAmount: parseFloat(laadItem.totalAmount) || 0,
       });
     });
 
-    incomingRecords.push(...Array.from(laadMap.values()));
+    // Then add LaadItems (actual stock records) - these are the ones that were actually added to stock
+    laadItemsWithWeight.forEach((laadItem, index) => {
+      const laadId = laadItem.laadId?._id?.toString();
+      if (!laadId) return;
+
+      // Create a separate record for each LaadItem to show all entries
+      incomingRecords.push({
+        laadNumber: laadItem.laadId?.laadNumber || 'N/A',
+        arrivalDate: laadItem.laadId?.arrivalDate || null,
+        supplierName: laadItem.laadId?.supplierId?.name || 'Unknown',
+        vehicleNumber: laadItem.laadId?.vehicleNumber || null,
+        gatePassNumber: laadItem.laadId?.gatePassNumber || null,
+        isTruckArrivalEntry: false, // This is actual stock
+        entryStatus: 'ADDED',
+        items: [{
+          id: laadItem.id || laadItem._id.toString() || `item-${index}`,
+          qualityGrade: laadItem.qualityGrade || 'N/A',
+          totalBags: laadItem.totalBags || 0,
+          remainingBags: laadItem.remainingBags || 0,
+          soldBags: (laadItem.totalBags || 0) - (laadItem.remainingBags || 0),
+          weightPerBag: laadItem.weightPerBag || null,
+          weightFromJacobabad: laadItem.weightFromJacobabad || null,
+          faisalabadWeight: laadItem.faisalabadWeight || null,
+          totalWeight: laadItem.totalWeight || null,
+          soldWeight: laadItem.soldWeight || null,
+          remainingWeight: laadItem.remainingWeight || null,
+          ratePerBag: parseFloat(laadItem.ratePerBag) || 0,
+          totalAmount: parseFloat(laadItem.totalAmount) || 0,
+        }],
+      });
+    });
 
     // Format outgoing sales
     const outgoingSales = sales.map(sale => ({

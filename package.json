@@ -8,6 +8,8 @@
     "start": "node index.js",
     "db:seed": "node src/scripts/seedAdmin.js",
     "seed:admin": "node src/scripts/seedAdmin.js",
+    "add:user": "node scripts/addUser.js",
+    "update:password": "node scripts/updateUserPassword.js",
     "migrate:bagWeight": "node src/scripts/migrateBagWeight.js",
     "migrate:gatePassNumber": "node src/scripts/migrateGatePassNumber.js",
     "migrate:saleGatePassNumber": "node src/scripts/migrateSaleGatePassNumber.js",
