@@ -63,11 +63,34 @@ const allowedOrigins = (() => {
   return ['http://localhost:3000'];
 })();
 
+// Check if we're in production
+const isProduction = process.env.NODE_ENV === 'production';
+const hasExplicitOrigins = process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL;
+
 app.use(cors({
   origin: (origin, callback) => {
-    // Allow requests with no origin (mobile apps, curl) and same-origin
+    // Allow requests with no origin (mobile apps, curl, Postman, etc.)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
+    
+    // In production without explicit origins, allow all HTTPS origins
+    // This is a fallback - it's better to set ALLOWED_ORIGINS or FRONTEND_URL env vars
+    if (isProduction && !hasExplicitOrigins) {
+      // Only allow HTTPS origins in production (security best practice)
+      if (origin.startsWith('https://')) {
+        logger.info(`✅ Allowing CORS from: ${origin} (production mode, no explicit origins set)`);
+        return callback(null, true);
+      }
+      logger.warn(`❌ CORS blocked non-HTTPS origin in production: ${origin}`);
+      return callback(new Error('Not allowed by CORS - HTTPS required in production'));
+    }
+    
+    // Check explicit allowed origins
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    
+    // Log blocked origin for debugging
+    logger.warn(`❌ CORS blocked origin: ${origin}`);
     return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
