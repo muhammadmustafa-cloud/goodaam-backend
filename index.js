@@ -67,10 +67,13 @@ const allowedOrigins = (() => {
 const isProduction = process.env.NODE_ENV === 'production';
 const hasExplicitOrigins = process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL;
 
+// CORS configuration with explicit handling
 app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, curl, Postman, etc.)
-    if (!origin) return callback(null, true);
+    if (!origin) {
+      return callback(null, true);
+    }
     
     // In production without explicit origins, allow all HTTPS origins
     // This is a fallback - it's better to set ALLOWED_ORIGINS or FRONTEND_URL env vars
@@ -86,17 +89,20 @@ app.use(cors({
     
     // Check explicit allowed origins
     if (allowedOrigins.includes(origin)) {
+      logger.info(`✅ Allowing CORS from: ${origin}`);
       return callback(null, true);
     }
     
     // Log blocked origin for debugging
-    logger.warn(`❌ CORS blocked origin: ${origin}`);
+    logger.warn(`❌ CORS blocked origin: ${origin}. Allowed origins: ${allowedOrigins.join(', ')}`);
     return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Per-Page']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Per-Page'],
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 }));
 
 // Compression middleware
