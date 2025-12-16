@@ -116,25 +116,6 @@ app.use(cors({
   maxAge: 86400 // 24 hours - cache preflight requests
 }));
 
-// Manual OPTIONS handler as backup for preflight requests
-app.options('*', (req, res) => {
-  const origin = req.headers.origin;
-  const vercelOrigin = 'https://godam-frontend.vercel.app';
-  const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
-  
-  // Allow Vercel origin or any HTTPS origin in production
-  if (origin === vercelOrigin || (isProduction && origin && origin.startsWith('https://'))) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
-    res.header('Access-Control-Allow-Credentials', 'true');
-    res.header('Access-Control-Max-Age', '86400');
-    return res.status(204).send();
-  }
-  
-  res.status(204).send();
-});
-
 // Compression middleware
 app.use(compression());
 
