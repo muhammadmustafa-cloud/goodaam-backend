@@ -38,7 +38,7 @@ if (!process.env.JWT_SECRET) {
 // Trust proxy (important for rate limiting behind reverse proxy)
 app.set('trust proxy', 1);
 
-// Security Headers with Helmet
+// Security Headers with Helmet (configured to not interfere with CORS)
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -49,9 +49,10 @@ app.use(helmet({
     },
   },
   crossOriginEmbedderPolicy: false, // Allow iframe embedding if needed
+  crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow cross-origin requests
 }));
 
-// CORS Configuration - SECURE
+// CORS Configuration - SECURE & PRODUCTION READY
 const allowedOrigins = (() => {
   // Comma-separated list in env
   if (process.env.ALLOWED_ORIGINS) {
@@ -63,15 +64,24 @@ const allowedOrigins = (() => {
   return ['http://localhost:3000'];
 })();
 
-// Check if we're in production
-const isProduction = process.env.NODE_ENV === 'production';
+// Check if we're in production (Render sets NODE_ENV=production by default)
+const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 const hasExplicitOrigins = process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL;
+
+// Always allow Vercel origin in production
+const vercelOrigin = 'https://godam-frontend.vercel.app';
 
 // CORS configuration with explicit handling
 app.use(cors({
   origin: (origin, callback) => {
     // Allow requests with no origin (mobile apps, curl, Postman, etc.)
     if (!origin) {
+      return callback(null, true);
+    }
+    
+    // Always allow Vercel frontend in production
+    if (origin === vercelOrigin) {
+      logger.info(`✅ Allowing CORS from Vercel: ${origin}`);
       return callback(null, true);
     }
     
@@ -99,11 +109,31 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'X-Requested-With'],
   exposedHeaders: ['X-Total-Count', 'X-Page', 'X-Per-Page'],
   preflightContinue: false,
-  optionsSuccessStatus: 204
+  optionsSuccessStatus: 204,
+  maxAge: 86400 // 24 hours - cache preflight requests
 }));
+
+// Manual OPTIONS handler as backup for preflight requests
+app.options('*', (req, res) => {
+  const origin = req.headers.origin;
+  const vercelOrigin = 'https://godam-frontend.vercel.app';
+  const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
+  
+  // Allow Vercel origin or any HTTPS origin in production
+  if (origin === vercelOrigin || (isProduction && origin && origin.startsWith('https://'))) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Max-Age', '86400');
+    return res.status(204).send();
+  }
+  
+  res.status(204).send();
+});
 
 // Compression middleware
 app.use(compression());
