@@ -158,19 +158,59 @@ const validateSale = validate([
   body('customerId')
     .isInt({ min: 1 })
     .withMessage('Valid customer ID is required'),
+  // Unified API: accept either single-item fields OR an items[] array.
+  body().custom((value) => {
+    if (!value || typeof value !== 'object') return true;
+    const hasItemsArray = Array.isArray(value.items) && value.items.length > 0;
+    const hasSingleFields = value.laadItemId !== undefined && value.laadItemId !== null && value.laadItemId !== '';
+
+    if (!hasItemsArray && !hasSingleFields) {
+      throw new Error('Provide either single item fields (laadItemId, bagsSold, bagWeight) or an items array');
+    }
+    return true;
+  }),
+
+  // Single-item validations (only when items[] is not provided)
   body('laadItemId')
+    .if(body('items').not().exists())
     .notEmpty()
     .withMessage('Valid laad item ID is required'),
   body('bagsSold')
+    .if(body('items').not().exists())
     .isInt({ min: 1 })
     .withMessage('Bags sold must be a positive integer'),
   body('bagWeight')
+    .if(body('items').not().exists())
     .isFloat({ min: 0.1 })
     .withMessage('Bag weight must be a positive number (minimum 0.1 kg)'),
   body('ratePerBag')
+    .if(body('items').not().exists())
     .optional({ nullable: true, checkFalsy: true })
     .isFloat({ min: 0 })
-    .withMessage('Rate per bag must be a positive number if provided')
+    .withMessage('Rate per bag must be a positive number if provided'),
+
+  // Multi-item validations
+  body('items')
+    .optional()
+    .isArray({ min: 1 })
+    .withMessage('items must be a non-empty array'),
+  body('items.*.laadItemId')
+    .if(body('items').exists())
+    .notEmpty()
+    .withMessage('Each item must have a valid laadItemId'),
+  body('items.*.bagsSold')
+    .if(body('items').exists())
+    .isInt({ min: 1 })
+    .withMessage('Each item must have a positive integer bagsSold'),
+  body('items.*.bagWeight')
+    .if(body('items').exists())
+    .isFloat({ min: 0.1 })
+    .withMessage('Each item must have a positive bagWeight (minimum 0.1 kg)'),
+  body('items.*.ratePerBag')
+    .if(body('items').exists())
+    .optional({ nullable: true, checkFalsy: true })
+    .isFloat({ min: 0 })
+    .withMessage('Each item ratePerBag must be a positive number if provided')
 ]);
 
 module.exports = {

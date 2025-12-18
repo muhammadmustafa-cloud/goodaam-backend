@@ -58,9 +58,23 @@ exports.getCustomerLedger = async (req, res) => {
       .lean();
 
     // Calculate totals
-    const totalBagsSold = sales.reduce((sum, sale) => sum + (sale.bagsSold || 0), 0);
+    const totalBagsSold = sales.reduce((sum, sale) => {
+      if (typeof sale.totalBags === 'number') return sum + sale.totalBags;
+      if (Array.isArray(sale.items) && sale.items.length > 0) {
+        return sum + sale.items.reduce((s, i) => s + (i.bagsSold || 0), 0);
+      }
+      return sum + (sale.bagsSold || 0);
+    }, 0);
     const totalAmount = sales.reduce((sum, sale) => {
-      const amount = sale.totalAmount || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0));
+      // Multi-item orders store totalAmount at the order level
+      const fallbackBags =
+        typeof sale.totalBags === 'number'
+          ? sale.totalBags
+          : (Array.isArray(sale.items) && sale.items.length > 0
+              ? sale.items.reduce((s, i) => s + (i.bagsSold || 0), 0)
+              : (sale.bagsSold || 0));
+
+      const amount = sale.totalAmount || (fallbackBags * (parseFloat(sale.ratePerBag) || 0));
       return sum + (parseFloat(amount) || 0);
     }, 0);
 
@@ -84,17 +98,36 @@ exports.getCustomerLedger = async (req, res) => {
           estimatedPaid: parseFloat((estimatedPaid || 0).toFixed(2)),
           baqaya: parseFloat((baqaya || 0).toFixed(2)),
         },
-        transactions: sales.map(sale => ({
+        transactions: sales.map(sale => {
+          const bagsSold =
+            typeof sale.totalBags === 'number'
+              ? sale.totalBags
+              : (Array.isArray(sale.items) && sale.items.length > 0
+                  ? sale.items.reduce((s, i) => s + (i.bagsSold || 0), 0)
+                  : sale.bagsSold);
+
+          const itemName =
+            Array.isArray(sale.items) && sale.items.length > 0
+              ? (sale.items[0]?.laadItemId?.itemId?.name || sale.laadItemId?.itemId?.name || 'Mixed Items')
+              : (sale.laadItemId?.itemId?.name || 'Unknown');
+
+          const laadNumber =
+            Array.isArray(sale.items) && sale.items.length > 0
+              ? (sale.items[0]?.laadNumber || sale.laadItemId?.laadId?.laadNumber || sale.laadNumber || 'N/A')
+              : (sale.laadItemId?.laadId?.laadNumber || sale.laadNumber || 'N/A');
+
+          return ({
           id: sale._id,
           date: sale.createdAt,
-          item: sale.laadItemId?.itemId?.name || 'Unknown',
+          item: itemName,
           quality: sale.qualityGrade || sale.laadItemId?.qualityGrade || 'N/A',
-          laadNumber: sale.laadItemId?.laadId?.laadNumber || sale.laadNumber || 'N/A',
-          bagsSold: sale.bagsSold,
+          laadNumber: laadNumber,
+          bagsSold: bagsSold,
           ratePerBag: parseFloat(sale.ratePerBag) || 0,
-          totalAmount: parseFloat(sale.totalAmount) || sale.bagsSold * (parseFloat(sale.ratePerBag) || 0),
+          totalAmount: parseFloat(sale.totalAmount) || bagsSold * (parseFloat(sale.ratePerBag) || 0),
           isMixOrder: sale.isMixOrder,
-        })),
+        });
+        }),
       },
     });
   } catch (error) {
@@ -593,9 +626,15 @@ exports.getLaadReport = async (req, res) => {
 
     // Get all sales from items in this laad (outgoing stock)
     const laadItemIds = laadItems.map(item => item._id);
+    const laadItemIdSet = new Set(laadItemIds.map((id) => id.toString()));
+
+    // Support both legacy single-item sales (sale.laadItemId) and new multi-item sales (sale.items[].laadItemId)
     const sales = await Sale.find({
-      laadItemId: { $in: laadItemIds },
-      ...saleDateFilter
+      $or: [
+        { laadItemId: { $in: laadItemIds } },
+        { 'items.laadItemId': { $in: laadItemIds } },
+      ],
+      ...saleDateFilter,
     })
       .populate('customerId')
       .populate({
@@ -605,18 +644,100 @@ exports.getLaadReport = async (req, res) => {
           model: 'Item'
         }
       })
+      .populate({
+        path: 'items.laadItemId',
+        populate: [
+          { path: 'itemId', model: 'Item' },
+          { path: 'laadId', model: 'Laad' },
+        ],
+      })
       .sort({ date: -1, createdAt: -1 })
       .lean();
 
-    // Calculate outgoing summary first (needed for weight calculations)
+    // Normalize outgoing sales into line-items so multi-item orders show correctly
+    const soldWeightByLaadItemId = new Map();
+    const uniqueCustomerIds = new Set();
+    const outgoingSales = [];
+
+    const addSoldWeight = (laadItemIdStr, bagsSold, bagWeight) => {
+      if (!laadItemIdStr) return;
+      const w = (bagsSold || 0) * (parseFloat(bagWeight) || 0);
+      if (!w) return;
+      soldWeightByLaadItemId.set(laadItemIdStr, (soldWeightByLaadItemId.get(laadItemIdStr) || 0) + w);
+    };
+
+    sales.forEach((sale) => {
+      const saleId = sale._id?.toString?.() || '';
+      const customerId = sale.customerId?._id?.toString?.() || null;
+      if (customerId) uniqueCustomerIds.add(customerId);
+
+      const common = {
+        date: sale.date || sale.createdAt,
+        customerName: sale.customerId?.name || 'Unknown',
+        customerContact: sale.customerId?.contact || null,
+        gatePassNumber: sale.gatePassNumber || null,
+        truckNumber: sale.truckNumber || null,
+        address: sale.address || null,
+        brokerName: sale.brokerName || null,
+      };
+
+      if (Array.isArray(sale.items) && sale.items.length > 0) {
+        sale.items.forEach((line, idx) => {
+          const lineLaadItemIdStr =
+            line?.laadItemId?._id?.toString?.() ||
+            line?.laadItemId?.toString?.() ||
+            null;
+          if (!lineLaadItemIdStr || !laadItemIdSet.has(lineLaadItemIdStr)) return;
+
+          const bagsSold = line.bagsSold || 0;
+          const bagWeight = line.bagWeight || null;
+          const ratePerBag = parseFloat(line.ratePerBag) || parseFloat(sale.ratePerBag) || 0;
+          const totalAmount = parseFloat(line.totalAmount) || (bagsSold * ratePerBag);
+
+          addSoldWeight(lineLaadItemIdStr, bagsSold, bagWeight);
+
+          outgoingSales.push({
+            id: `${saleId}-${idx}`,
+            ...common,
+            itemName: line?.laadItemId?.itemId?.name || 'Unknown',
+            qualityGrade: line.qualityGrade || line?.laadItemId?.qualityGrade || 'N/A',
+            bagsSold,
+            bagWeight,
+            ratePerBag,
+            totalAmount,
+            isMixOrder: true,
+          });
+        });
+      } else {
+        const liId = sale.laadItemId?._id?.toString?.() || null;
+        if (!liId || !laadItemIdSet.has(liId)) return;
+
+        const bagsSold = sale.bagsSold || 0;
+        const bagWeight = sale.bagWeight || null;
+        const ratePerBag = parseFloat(sale.ratePerBag) || 0;
+        const totalAmount = parseFloat(sale.totalAmount) || (bagsSold * ratePerBag);
+
+        addSoldWeight(liId, bagsSold, bagWeight);
+
+        outgoingSales.push({
+          id: saleId,
+          ...common,
+          itemName: sale.laadItemId?.itemId?.name || 'Unknown',
+          qualityGrade: sale.qualityGrade || sale.laadItemId?.qualityGrade || 'N/A',
+          bagsSold,
+          bagWeight,
+          ratePerBag,
+          totalAmount,
+          isMixOrder: sale.isMixOrder || false,
+        });
+      }
+    });
+
     const outgoingSummary = {
-      totalSales: sales.length,
-      totalBagsSold: sales.reduce((sum, sale) => sum + (sale.bagsSold || 0), 0),
-      totalRevenue: sales.reduce((sum, sale) => {
-        const amount = parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0));
-        return sum + amount;
-      }, 0),
-      uniqueCustomers: new Set(sales.map(s => s.customerId?._id?.toString()).filter(Boolean)).size,
+      totalSales: outgoingSales.length,
+      totalBagsSold: outgoingSales.reduce((sum, row) => sum + (row.bagsSold || 0), 0),
+      totalRevenue: outgoingSales.reduce((sum, row) => sum + (parseFloat(row.totalAmount) || 0), 0),
+      uniqueCustomers: uniqueCustomerIds.size,
     };
 
     // Calculate weight tracking for each item
@@ -624,17 +745,9 @@ exports.getLaadReport = async (req, res) => {
       // Calculate total weight for this item
       const totalWeight = item.faisalabadWeight || item.weightFromJacobabad || 
         (item.weightPerBag && item.totalBags ? item.weightPerBag * item.totalBags : null);
-      
-      // Get all sales for this specific laadItem to calculate sold weight
-      const itemSales = sales.filter(sale => 
-        sale.laadItemId?._id?.toString() === item._id.toString()
-      );
-      
-      // Calculate sold weight (sum of bagsSold * bagWeight from sales)
-      const soldWeight = itemSales.reduce((sum, sale) => {
-        const saleWeight = (sale.bagsSold || 0) * (parseFloat(sale.bagWeight) || 0);
-        return sum + saleWeight;
-      }, 0);
+
+      // Sold weight uses normalized sales rows (supports multi-item sales)
+      const soldWeight = soldWeightByLaadItemId.get(item._id.toString()) || 0;
       
       // Calculate remaining weight
       const remainingWeight = totalWeight ? totalWeight - soldWeight : null;
@@ -667,25 +780,6 @@ exports.getLaadReport = async (req, res) => {
       soldWeight: incomingItems.reduce((sum, item) => sum + (item.soldWeight || 0), 0),
       remainingWeight: incomingItems.reduce((sum, item) => sum + (item.remainingWeight || 0), 0),
     };
-
-    // Calculate outgoing summary
-    const outgoingSales = sales.map(sale => ({
-      id: sale._id.toString(),
-      date: sale.date || sale.createdAt,
-      customerName: sale.customerId?.name || 'Unknown',
-      customerContact: sale.customerId?.contact || null,
-      itemName: sale.laadItemId?.itemId?.name || 'Unknown',
-      qualityGrade: sale.qualityGrade || sale.laadItemId?.qualityGrade || 'N/A',
-      bagsSold: sale.bagsSold || 0,
-      bagWeight: sale.bagWeight || null,
-      ratePerBag: parseFloat(sale.ratePerBag) || 0,
-      totalAmount: parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0)),
-      gatePassNumber: sale.gatePassNumber || null,
-      truckNumber: sale.truckNumber || null,
-      address: sale.address || null,
-      brokerName: sale.brokerName || null,
-      isMixOrder: sale.isMixOrder || false,
-    }));
 
     return res.json({
       success: true,
@@ -794,9 +888,15 @@ exports.getItemReport = async (req, res) => {
     }
 
     // Get all sales for this item
+    const laadItemIds = filteredLaadItems.map(li => li._id);
+    const laadItemIdSet = new Set(laadItemIds.map((id) => id.toString()));
+
     const sales = await Sale.find({
-      laadItemId: { $in: filteredLaadItems.map(li => li._id) },
-      ...saleDateFilter
+      $or: [
+        { laadItemId: { $in: laadItemIds } },
+        { 'items.laadItemId': { $in: laadItemIds } },
+      ],
+      ...saleDateFilter,
     })
       .populate('customerId')
       .populate({
@@ -812,25 +912,107 @@ exports.getItemReport = async (req, res) => {
           }
         ]
       })
+      .populate({
+        path: 'items.laadItemId',
+        populate: [
+          { path: 'itemId', model: 'Item' },
+          { path: 'laadId', model: 'Laad' },
+        ],
+      })
       .sort({ date: -1, createdAt: -1 })
       .lean();
+
+    // Build sold-weight map + outgoing rows (supports multi-item sales)
+    const soldWeightByLaadItemId = new Map();
+    const uniqueCustomerIds = new Set();
+    const outgoingSales = [];
+
+    const addSoldWeight = (laadItemIdStr, bagsSold, bagWeight) => {
+      if (!laadItemIdStr) return;
+      const w = (bagsSold || 0) * (parseFloat(bagWeight) || 0);
+      if (!w) return;
+      soldWeightByLaadItemId.set(laadItemIdStr, (soldWeightByLaadItemId.get(laadItemIdStr) || 0) + w);
+    };
+
+    sales.forEach((sale) => {
+      const saleId = sale._id?.toString?.() || '';
+      const customerId = sale.customerId?._id?.toString?.() || null;
+      if (customerId) uniqueCustomerIds.add(customerId);
+
+      const common = {
+        date: sale.date || sale.createdAt,
+        customerName: sale.customerId?.name || 'Unknown',
+        customerContact: sale.customerId?.contact || null,
+        gatePassNumber: sale.gatePassNumber || null,
+        truckNumber: sale.truckNumber || null,
+        address: sale.address || null,
+        brokerName: sale.brokerName || null,
+      };
+
+      if (Array.isArray(sale.items) && sale.items.length > 0) {
+        sale.items.forEach((line, idx) => {
+          const lineLaadItemIdStr =
+            line?.laadItemId?._id?.toString?.() ||
+            line?.laadItemId?.toString?.() ||
+            null;
+          if (!lineLaadItemIdStr || !laadItemIdSet.has(lineLaadItemIdStr)) return;
+
+          const bagsSold = line.bagsSold || 0;
+          const bagWeight = line.bagWeight || null;
+          const ratePerBag = parseFloat(line.ratePerBag) || parseFloat(sale.ratePerBag) || 0;
+          const totalAmount = parseFloat(line.totalAmount) || (bagsSold * ratePerBag);
+
+          addSoldWeight(lineLaadItemIdStr, bagsSold, bagWeight);
+
+          outgoingSales.push({
+            id: `${saleId}-${idx}`,
+            ...common,
+            laadNumber:
+              line.laadNumber ||
+              line?.laadItemId?.laadId?.laadNumber ||
+              sale.laadNumber ||
+              'N/A',
+            qualityGrade: line.qualityGrade || line?.laadItemId?.qualityGrade || 'N/A',
+            bagsSold,
+            bagWeight,
+            ratePerBag,
+            totalAmount,
+            isMixOrder: true,
+          });
+        });
+      } else {
+        const liId = sale.laadItemId?._id?.toString?.() || null;
+        if (!liId || !laadItemIdSet.has(liId)) return;
+
+        const bagsSold = sale.bagsSold || 0;
+        const bagWeight = sale.bagWeight || null;
+        const ratePerBag = parseFloat(sale.ratePerBag) || 0;
+        const totalAmount = parseFloat(sale.totalAmount) || (bagsSold * ratePerBag);
+
+        addSoldWeight(liId, bagsSold, bagWeight);
+
+        outgoingSales.push({
+          id: saleId,
+          ...common,
+          laadNumber: sale.laadNumber || sale.laadItemId?.laadId?.laadNumber || 'N/A',
+          qualityGrade: sale.qualityGrade || sale.laadItemId?.qualityGrade || 'N/A',
+          bagsSold,
+          bagWeight,
+          ratePerBag,
+          totalAmount,
+          isMixOrder: sale.isMixOrder || false,
+        });
+      }
+    });
 
     // Calculate weight tracking for each laadItem
     const laadItemsWithWeight = await Promise.all(filteredLaadItems.map(async (laadItem) => {
       // Calculate total weight for this laadItem
       const totalWeight = laadItem.faisalabadWeight || laadItem.weightFromJacobabad || 
         (laadItem.weightPerBag && laadItem.totalBags ? laadItem.weightPerBag * laadItem.totalBags : null);
-      
-      // Get all sales for this specific laadItem to calculate sold weight
-      const itemSales = sales.filter(sale => 
-        sale.laadItemId?._id?.toString() === laadItem._id.toString()
-      );
-      
-      // Calculate sold weight (sum of bagsSold * bagWeight from sales)
-      const soldWeight = itemSales.reduce((sum, sale) => {
-        const saleWeight = (sale.bagsSold || 0) * (parseFloat(sale.bagWeight) || 0);
-        return sum + saleWeight;
-      }, 0);
+
+      // Sold weight uses normalized outgoing rows (supports multi-item sales)
+      const soldWeight = soldWeightByLaadItemId.get(laadItem._id.toString()) || 0;
       
       // Calculate remaining weight
       const remainingWeight = totalWeight ? totalWeight - soldWeight : null;
@@ -853,15 +1035,12 @@ exports.getItemReport = async (req, res) => {
       remainingWeight: laadItemsWithWeight.reduce((sum, item) => sum + (item.remainingWeight || 0), 0),
     };
 
-    // Calculate outgoing summary (from sales)
+    // Calculate outgoing summary (from sales line-items)
     const outgoingSummary = {
-      totalSales: sales.length,
-      totalBagsSold: sales.reduce((sum, sale) => sum + (sale.bagsSold || 0), 0),
-      totalRevenue: sales.reduce((sum, sale) => {
-        const amount = parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0));
-        return sum + amount;
-      }, 0),
-      uniqueCustomers: new Set(sales.map(s => s.customerId?._id?.toString()).filter(Boolean)).size,
+      totalSales: outgoingSales.length,
+      totalBagsSold: outgoingSales.reduce((sum, row) => sum + (row.bagsSold || 0), 0),
+      totalRevenue: outgoingSales.reduce((sum, row) => sum + (parseFloat(row.totalAmount) || 0), 0),
+      uniqueCustomers: uniqueCustomerIds.size,
     };
 
     // Calculate current stock
@@ -995,25 +1174,6 @@ exports.getItemReport = async (req, res) => {
         }],
       });
     });
-
-    // Format outgoing sales
-    const outgoingSales = sales.map(sale => ({
-      id: sale._id.toString(),
-      date: sale.date || sale.createdAt,
-      customerName: sale.customerId?.name || 'Unknown',
-      customerContact: sale.customerId?.contact || null,
-      laadNumber: sale.laadNumber || sale.laadItemId?.laadId?.laadNumber || 'N/A',
-      qualityGrade: sale.qualityGrade || sale.laadItemId?.qualityGrade || 'N/A',
-      bagsSold: sale.bagsSold || 0,
-      bagWeight: sale.bagWeight || null,
-      ratePerBag: parseFloat(sale.ratePerBag) || 0,
-      totalAmount: parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0)),
-      gatePassNumber: sale.gatePassNumber || null,
-      truckNumber: sale.truckNumber || null,
-      address: sale.address || null,
-      brokerName: sale.brokerName || null,
-      isMixOrder: sale.isMixOrder || false,
-    }));
 
     return res.json({
       success: true,

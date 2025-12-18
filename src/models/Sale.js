@@ -1,5 +1,41 @@
 const mongoose = require('mongoose');
 
+const saleItemSchema = new mongoose.Schema(
+  {
+    laadItemId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'LaadItem',
+      required: true,
+      index: true,
+    },
+    bagsSold: {
+      type: Number,
+      required: true,
+      min: 1,
+    },
+    bagWeight: {
+      type: Number,
+      required: true,
+      min: 0.1,
+    },
+    ratePerBag: {
+      type: Number,
+    },
+    totalAmount: {
+      type: Number,
+    },
+    qualityGrade: {
+      type: String,
+      trim: true,
+    },
+    laadNumber: {
+      type: String,
+      trim: true,
+    },
+  },
+  { _id: false }
+);
+
 const saleSchema = new mongoose.Schema({
   date: {
     type: Date,
@@ -12,21 +48,39 @@ const saleSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  // New unified shape: sale can contain multiple items
+  items: {
+    type: [saleItemSchema],
+    default: undefined,
+  },
   laadItemId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'LaadItem',
-    required: true,
+    required: function () {
+      return !Array.isArray(this.items) || this.items.length === 0;
+    },
     index: true
   },
   bagsSold: {
     type: Number,
-    required: true
+    required: function () {
+      return !Array.isArray(this.items) || this.items.length === 0;
+    }
   },
   bagWeight: {
     type: Number,
-    required: true,
+    required: function () {
+      return !Array.isArray(this.items) || this.items.length === 0;
+    },
     min: 0.1,
     comment: 'Weight per bag sold to customer (can differ from stock bag weight)'
+  },
+  totalBags: {
+    type: Number,
+    index: true,
+  },
+  totalWeight: {
+    type: Number,
   },
   ratePerBag: {
     type: Number

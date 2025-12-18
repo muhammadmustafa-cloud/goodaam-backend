@@ -49,6 +49,35 @@ const toId = (doc) => {
   return doc.id || doc._id?.toString() || null;
 };
 
+const formatLaadItem = (laadItemDoc) => {
+  if (!laadItemDoc) return null;
+
+  return {
+    id: toId(laadItemDoc),
+    totalBags: laadItemDoc.totalBags ?? null,
+    remainingBags: laadItemDoc.remainingBags ?? 0,
+    qualityGrade: laadItemDoc.qualityGrade || null,
+    item: laadItemDoc.itemId
+      ? {
+          id: toId(laadItemDoc.itemId),
+          name: laadItemDoc.itemId.name || 'Unknown',
+          quality: laadItemDoc.itemId.quality || '',
+        }
+      : null,
+    laad: laadItemDoc.laadId
+      ? {
+          id: toId(laadItemDoc.laadId),
+          laadNumber: laadItemDoc.laadId.laadNumber || '',
+          supplier: laadItemDoc.laadId.supplierId
+            ? {
+                name: laadItemDoc.laadId.supplierId.name || 'Unknown',
+              }
+            : { name: 'Unknown' },
+        }
+      : null,
+  };
+};
+
 const formatSale = (saleDoc) => {
   if (!saleDoc) return null;
 
@@ -65,37 +94,54 @@ const formatSale = (saleDoc) => {
       }
     : null;
 
+  // New unified shape (multi-item sale order)
+  if (Array.isArray(saleDoc.items) && saleDoc.items.length > 0) {
+    const items = saleDoc.items.map((line) => {
+      const laadItemDoc = line.laadItemId;
+      const laadItemId =
+        typeof laadItemDoc === 'object'
+          ? toId(laadItemDoc)
+          : laadItemDoc?.toString?.() || null;
+
+      return {
+        ...line,
+        laadItemId,
+        laadItem: laadItemDoc ? formatLaadItem(laadItemDoc) : null,
+      };
+    });
+
+    const totalBags =
+      typeof saleDoc.totalBags === 'number'
+        ? saleDoc.totalBags
+        : items.reduce((sum, i) => sum + (i.bagsSold || 0), 0);
+    const totalWeight =
+      typeof saleDoc.totalWeight === 'number'
+        ? saleDoc.totalWeight
+        : items.reduce((sum, i) => sum + (i.bagsSold || 0) * (i.bagWeight || 0), 0);
+
+    return {
+      ...formatted,
+      items,
+      laadItem: null,
+      laadNumber: null,
+      // For backward compatibility with UI expecting bagsSold,
+      // we expose totalBags in bagsSold when this is a multi-item order.
+      bagsSold: totalBags,
+      bagWeight: null,
+      totalBags,
+      totalWeight,
+      isMixOrder: true,
+    };
+  }
+
   formatted.laadItem = saleDoc.laadItemId
-    ? {
-        id: toId(saleDoc.laadItemId),
-        totalBags: saleDoc.laadItemId.totalBags ?? null,
-        remainingBags: saleDoc.laadItemId.remainingBags ?? 0,
-        qualityGrade: saleDoc.laadItemId.qualityGrade || null,
-        item: saleDoc.laadItemId.itemId
-          ? {
-              id: toId(saleDoc.laadItemId.itemId),
-              name: saleDoc.laadItemId.itemId.name || 'Unknown',
-              quality: saleDoc.laadItemId.itemId.quality || '',
-            }
-          : null,
-        laad: saleDoc.laadItemId.laadId
-          ? {
-              id: toId(saleDoc.laadItemId.laadId),
-              laadNumber: saleDoc.laadItemId.laadId.laadNumber || '',
-              supplier: saleDoc.laadItemId.laadId.supplierId
-                ? {
-                    name: saleDoc.laadItemId.laadId.supplierId.name || 'Unknown',
-                  }
-                : { name: 'Unknown' },
-            }
-          : null,
-      }
+    ? formatLaadItem(saleDoc.laadItemId)
     : null;
 
   return formatted;
 };
 
-exports.createSale = async (payload) => {
+async function createSingleSale(payload) {
   const { 
     customerId, 
     laadItemId, 
@@ -413,6 +459,211 @@ exports.createSale = async (payload) => {
   } catch (error) {
     throw error;
   }
+}
+
+async function createSaleOrderFromItems(payload) {
+  const { customerId, items, qualityGrade, ratePerBag, gatePassNumber, date, address, truckNumber, brokerName } = payload;
+
+  if (!customerId || !Array.isArray(items) || items.length === 0) {
+    const e = new Error('customerId and items array are required');
+    e.status = 400;
+    throw e;
+  }
+
+  const customerObjectId = await convertToObjectId(customerId, 'Customer');
+  const customer = await Customer.findById(customerObjectId);
+  if (!customer) {
+    const e = new Error(`Customer with ID ${customerId} not found`);
+    e.status = 404;
+    throw e;
+  }
+
+  // Use transactions when possible; otherwise do manual rollback
+  let session = null;
+  let useTransaction = false;
+
+  const txSupported = await supportsMongoTransactions();
+  if (txSupported) {
+    session = await Sale.startSession();
+    session.startTransaction();
+    useTransaction = true;
+  }
+
+  const stockDeductions = []; // { laadItemId: ObjectId, bagsSold: number }
+  let createdOrderId = null;
+
+  try {
+    const orderItems = [];
+    let totalBags = 0;
+    let totalWeight = 0;
+    let totalAmount = 0;
+    let hasAnyAmount = false;
+
+    for (const line of items) {
+      const lineLaadItemId = line?.laadItemId;
+      const lineBags = parseInt(line?.bagsSold, 10);
+      const lineBagWeight = parseFloat(line?.bagWeight);
+
+      if (!lineLaadItemId || !Number.isInteger(lineBags) || lineBags <= 0) {
+        const e = new Error('Each item must have laadItemId and positive integer bagsSold');
+        e.status = 400;
+        throw e;
+      }
+
+      if (!Number.isFinite(lineBagWeight) || lineBagWeight <= 0) {
+        const e = new Error('Each item must have positive bagWeight');
+        e.status = 400;
+        throw e;
+      }
+
+      const laadItemObjectId = await convertToObjectId(lineLaadItemId, 'LaadItem');
+
+      // Atomic stock deduction
+      const query = { _id: laadItemObjectId, remainingBags: { $gte: lineBags } };
+      const update = { $inc: { remainingBags: -lineBags } };
+      const opts = { new: true };
+
+      const updatedLaadItem = useTransaction && session
+        ? await LaadItem.findOneAndUpdate(query, update, opts).session(session)
+        : await LaadItem.findOneAndUpdate(query, update, opts);
+
+      if (!updatedLaadItem) {
+        const e = new Error(`Insufficient stock for LaadItem ${lineLaadItemId}`);
+        e.status = 400;
+        throw e;
+      }
+
+      stockDeductions.push({ laadItemId: laadItemObjectId, bagsSold: lineBags });
+
+      const effectiveRate =
+        line?.ratePerBag !== undefined && line?.ratePerBag !== null && line?.ratePerBag !== ''
+          ? parseFloat(line.ratePerBag)
+          : (ratePerBag !== undefined && ratePerBag !== null && ratePerBag !== '' ? parseFloat(ratePerBag) : null);
+
+      const lineTotalAmount =
+        effectiveRate !== null && Number.isFinite(effectiveRate)
+          ? effectiveRate * lineBags
+          : null;
+
+      if (lineTotalAmount !== null) {
+        totalAmount += lineTotalAmount;
+        hasAnyAmount = true;
+      }
+
+      totalBags += lineBags;
+      totalWeight += lineBags * lineBagWeight;
+
+      orderItems.push({
+        laadItemId: laadItemObjectId,
+        bagsSold: lineBags,
+        bagWeight: lineBagWeight,
+        ratePerBag: effectiveRate !== null && Number.isFinite(effectiveRate) ? effectiveRate : null,
+        totalAmount: lineTotalAmount,
+        qualityGrade: line?.qualityGrade || qualityGrade || null,
+      });
+    }
+
+    const order = new Sale({
+      customerId: customerObjectId,
+      items: orderItems,
+      isMixOrder: items.length > 1,
+      // Backward-compatible aggregates (used by older reports/UI paths)
+      bagsSold: totalBags,
+      bagWeight: totalBags > 0 ? totalWeight / totalBags : null,
+      totalBags,
+      totalWeight,
+      totalAmount: hasAnyAmount ? totalAmount : null,
+      gatePassNumber: gatePassNumber || null,
+      date: date ? new Date(date) : new Date(),
+      address: address || null,
+      truckNumber: truckNumber || null,
+      brokerName: brokerName || null,
+    });
+
+    if (useTransaction && session) {
+      await order.save({ session });
+    } else {
+      await order.save();
+    }
+
+    createdOrderId = order._id;
+
+    if (useTransaction && session) {
+      await session.commitTransaction();
+    }
+
+    // Populate and return
+    const populated = await Sale.findById(order._id)
+      .populate('customerId')
+      .populate({
+        path: 'items.laadItemId',
+        populate: [
+          { path: 'itemId', model: 'Item' },
+          {
+            path: 'laadId',
+            populate: {
+              path: 'supplierId',
+              model: 'Supplier',
+            },
+          },
+        ],
+      })
+      .lean();
+
+    return formatSale(populated);
+  } catch (error) {
+    if (useTransaction && session) {
+      try {
+        await session.abortTransaction();
+      } catch {
+        // ignore
+      }
+    } else {
+      // Manual rollback: delete created order (if created) and restore stock
+      if (createdOrderId) {
+        try {
+          await Sale.findByIdAndDelete(createdOrderId);
+        } catch {
+          // ignore
+        }
+      }
+
+      for (const d of stockDeductions) {
+        try {
+          await LaadItem.findByIdAndUpdate(d.laadItemId, { $inc: { remainingBags: d.bagsSold } });
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    throw error;
+  } finally {
+    if (session) {
+      session.endSession();
+    }
+  }
+}
+
+exports.createSale = async (payload) => {
+  // Unified API: allow items[] for both single and multi-item sales
+  if (Array.isArray(payload?.items) && payload.items.length > 0) {
+    if (payload.items.length === 1) {
+      const first = payload.items[0] || {};
+      return createSingleSale({
+        ...payload,
+        laadItemId: first.laadItemId,
+        bagsSold: Number.isInteger(first.bagsSold) ? first.bagsSold : parseInt(first.bagsSold, 10),
+        bagWeight: Number.isFinite(first.bagWeight) ? first.bagWeight : parseFloat(first.bagWeight),
+        ratePerBag: first.ratePerBag ?? payload.ratePerBag ?? null,
+        qualityGrade: first.qualityGrade ?? payload.qualityGrade ?? null,
+      });
+    }
+
+    return createSaleOrderFromItems(payload);
+  }
+
+  return createSingleSale(payload);
 };
 
 // Create mix order (multiple laad items)
@@ -646,7 +897,8 @@ exports.getSales = async (filters = {}) => {
   }
   
   if (customerId) {
-    query.customerId = customerId;
+    const customerObjectId = await convertToObjectId(customerId, 'Customer');
+    query.customerId = customerObjectId;
   }
   
   if (laadNumber) {
@@ -672,6 +924,19 @@ exports.getSales = async (filters = {}) => {
         }
       ]
     })
+    .populate({
+      path: 'items.laadItemId',
+      populate: [
+        { path: 'itemId', model: 'Item' },
+        {
+          path: 'laadId',
+          populate: {
+            path: 'supplierId',
+            model: 'Supplier',
+          },
+        },
+      ],
+    })
     .lean();
 
   // Transform to match frontend expectations
@@ -696,6 +961,19 @@ exports.getSaleById = async (id) => {
           }
         }
       ]
+    })
+    .populate({
+      path: 'items.laadItemId',
+      populate: [
+        { path: 'itemId', model: 'Item' },
+        {
+          path: 'laadId',
+          populate: {
+            path: 'supplierId',
+            model: 'Supplier',
+          },
+        },
+      ],
     })
     .lean();
 
@@ -730,19 +1008,8 @@ exports.updateSale = async (id, payload) => {
     brokerName,
     date,
     gatePassNumber,
+    items,
   } = payload;
-
-  if (!customerId || !laadItemId || !Number.isInteger(bagsSold) || bagsSold <= 0 || !bagWeight) {
-    const e = new Error('customerId, laadItemId, positive integer bagsSold and bagWeight are required');
-    e.status = 400;
-    throw e;
-  }
-
-  if (bagWeight <= 0) {
-    const e = new Error('bagWeight must be greater than 0');
-    e.status = 400;
-    throw e;
-  }
 
   const sale = await Sale.findById(id);
   if (!sale) {
@@ -751,8 +1018,200 @@ exports.updateSale = async (id, payload) => {
     throw e;
   }
 
-  if (sale.isMixOrder) {
+  // If this is our new "order" shape (items[]), allow editing via items[].
+  const isOrder = Array.isArray(sale.items) && sale.items.length > 0;
+  const wantsOrderUpdate = Array.isArray(items) && items.length > 0;
+
+  // Legacy mix orders (old system) are still locked (multiple Sale docs with isMixOrder=true).
+  if (sale.isMixOrder && !isOrder) {
     const e = new Error('Mix order sales cannot be edited individually');
+    e.status = 400;
+    throw e;
+  }
+
+  if (isOrder || wantsOrderUpdate) {
+    if (!customerId || !Array.isArray(items) || items.length === 0) {
+      const e = new Error('customerId and items array are required to update this sale order');
+      e.status = 400;
+      throw e;
+    }
+
+    // Validate items
+    for (const line of items) {
+      const lineBags = parseInt(line?.bagsSold, 10);
+      const lineBagWeight = parseFloat(line?.bagWeight);
+      if (!line?.laadItemId || !Number.isInteger(lineBags) || lineBags <= 0) {
+        const e = new Error('Each item must have laadItemId and positive integer bagsSold');
+        e.status = 400;
+        throw e;
+      }
+      if (!Number.isFinite(lineBagWeight) || lineBagWeight <= 0) {
+        const e = new Error('Each item must have positive bagWeight');
+        e.status = 400;
+        throw e;
+      }
+    }
+
+    const customerObjectId = await convertToObjectId(customerId, 'Customer');
+
+    // Transaction when possible, otherwise manual rollback
+    let session = null;
+    let useTransaction = false;
+    const txSupported = await supportsMongoTransactions();
+    if (txSupported) {
+      session = await Sale.startSession();
+      session.startTransaction();
+      useTransaction = true;
+    }
+
+    const oldItems = Array.isArray(sale.items) ? sale.items : [];
+    const restored = []; // [{ laadItemId, bagsSold }]
+    const deducted = []; // [{ laadItemId, bagsSold }]
+
+    try {
+      // 1) Restore old stock first
+      for (const oldLine of oldItems) {
+        if (!oldLine?.laadItemId || !oldLine?.bagsSold) continue;
+        const inc = { $inc: { remainingBags: oldLine.bagsSold } };
+        if (useTransaction && session) {
+          await LaadItem.findByIdAndUpdate(oldLine.laadItemId, inc).session(session);
+        } else {
+          await LaadItem.findByIdAndUpdate(oldLine.laadItemId, inc);
+        }
+        restored.push({ laadItemId: oldLine.laadItemId, bagsSold: oldLine.bagsSold });
+      }
+
+      // 2) Deduct new stock (atomically with >= check)
+      let totalBags = 0;
+      let totalWeight = 0;
+      let totalAmountValue = 0;
+      let hasAnyAmount = false;
+
+      const normalizedItems = [];
+      for (const line of items) {
+        const newLaadItemId = await convertToObjectId(line.laadItemId, 'LaadItem');
+        const lineBags = parseInt(line.bagsSold, 10);
+        const lineBagWeight = parseFloat(line.bagWeight);
+
+        const query = { _id: newLaadItemId, remainingBags: { $gte: lineBags } };
+        const update = { $inc: { remainingBags: -lineBags } };
+        const opts = { new: true };
+
+        const updated = useTransaction && session
+          ? await LaadItem.findOneAndUpdate(query, update, opts).session(session)
+          : await LaadItem.findOneAndUpdate(query, update, opts);
+
+        if (!updated) {
+          const e = new Error(`Insufficient stock for LaadItem ${line.laadItemId}`);
+          e.status = 400;
+          throw e;
+        }
+
+        deducted.push({ laadItemId: newLaadItemId, bagsSold: lineBags });
+
+        const effectiveRate =
+          line?.ratePerBag !== undefined && line?.ratePerBag !== null && line?.ratePerBag !== ''
+            ? parseFloat(line.ratePerBag)
+            : null;
+        const lineTotalAmount =
+          effectiveRate !== null && Number.isFinite(effectiveRate)
+            ? effectiveRate * lineBags
+            : null;
+
+        if (lineTotalAmount !== null) {
+          totalAmountValue += lineTotalAmount;
+          hasAnyAmount = true;
+        }
+
+        totalBags += lineBags;
+        totalWeight += lineBags * lineBagWeight;
+
+        normalizedItems.push({
+          laadItemId: newLaadItemId,
+          bagsSold: lineBags,
+          bagWeight: lineBagWeight,
+          ratePerBag: effectiveRate !== null && Number.isFinite(effectiveRate) ? effectiveRate : null,
+          totalAmount: lineTotalAmount,
+          qualityGrade: line?.qualityGrade || null,
+        });
+      }
+
+      sale.customerId = customerObjectId;
+      sale.items = normalizedItems;
+      sale.isMixOrder = normalizedItems.length > 1;
+      sale.totalBags = totalBags;
+      sale.totalWeight = totalWeight;
+      sale.totalAmount = hasAnyAmount ? totalAmountValue : null;
+      sale.bagsSold = totalBags; // backward-compat
+      sale.bagWeight = totalBags > 0 ? totalWeight / totalBags : null; // backward-compat
+
+      sale.truckNumber = truckNumber || null;
+      sale.address = address || null;
+      sale.brokerName = brokerName || null;
+      sale.gatePassNumber = gatePassNumber || null;
+      sale.date = date ? new Date(date) : sale.date;
+
+      if (useTransaction && session) {
+        await sale.save({ session });
+        await session.commitTransaction();
+      } else {
+        await sale.save();
+      }
+
+      const updatedSale = await Sale.findById(sale._id)
+        .populate('customerId')
+        .populate({
+          path: 'items.laadItemId',
+          populate: [
+            { path: 'itemId', model: 'Item' },
+            {
+              path: 'laadId',
+              populate: { path: 'supplierId', model: 'Supplier' },
+            },
+          ],
+        })
+        .lean();
+
+      return formatSale(updatedSale);
+    } catch (err) {
+      if (useTransaction && session) {
+        try {
+          await session.abortTransaction();
+        } catch {
+          // ignore
+        }
+      } else {
+        // Manual rollback: undo deductions, re-apply old deductions by reversing restores
+        for (const d of deducted) {
+          try {
+            await LaadItem.findByIdAndUpdate(d.laadItemId, { $inc: { remainingBags: d.bagsSold } });
+          } catch {
+            // ignore
+          }
+        }
+        for (const r of restored) {
+          try {
+            await LaadItem.findByIdAndUpdate(r.laadItemId, { $inc: { remainingBags: -r.bagsSold } });
+          } catch {
+            // ignore
+          }
+        }
+      }
+      throw err;
+    } finally {
+      if (session) session.endSession();
+    }
+  }
+
+  // Legacy single-item update path
+  if (!customerId || !laadItemId || !Number.isInteger(bagsSold) || bagsSold <= 0 || !bagWeight) {
+    const e = new Error('customerId, laadItemId, positive integer bagsSold and bagWeight are required');
+    e.status = 400;
+    throw e;
+  }
+
+  if (bagWeight <= 0) {
+    const e = new Error('bagWeight must be greater than 0');
     e.status = 400;
     throw e;
   }

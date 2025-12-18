@@ -111,10 +111,13 @@ exports.getCombinedStockItems = async () => {
           }
         } else {
           // No match found - create new stock entry for skipped items
-          // Use laadItemId if available, otherwise create virtual entry
-          const virtualId = entryItem.laadItemId 
-            ? entryItem.laadItemId.toString() 
-            : `skipped-${entry._id.toString()}-${entryItem.itemId._id?.toString() || entryItem.itemId.toString()}`;
+          // IMPORTANT: Only include skipped items if we can map them to a real LaadItem.
+          // Otherwise the frontend can select an ID that the sales endpoint cannot process.
+          if (!entryItem.laadItemId) {
+            return;
+          }
+
+          const virtualId = entryItem.laadItemId.toString();
           
           combinedItemsMap.set(combineKey, {
             id: virtualId,
@@ -126,7 +129,7 @@ exports.getCombinedStockItems = async () => {
             weightFromJacobabad: entryItem.weightFromJacobabad || null,
             faisalabadWeight: entryItem.faisalabadWeight || null,
             ratePerBag: entryItem.ratePerBag || null,
-            matchingLaadItemIds: entryItem.laadItemId ? [entryItem.laadItemId.toString()] : [],
+            matchingLaadItemIds: [entryItem.laadItemId.toString()],
             includesSkippedItems: true, // Mark as including skipped items
             item: {
               id: itemDoc._id?.toString() || itemDoc.id?.toString() || '',
