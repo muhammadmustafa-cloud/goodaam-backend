@@ -1,4 +1,5 @@
 const Sale = require('../models/Sale');
+const mongoose = require('mongoose');
 const Customer = require('../models/Customer');
 const LaadItem = require('../models/LaadItem');
 const Item = require('../models/Item');
@@ -6,6 +7,42 @@ const Laad = require('../models/Laad');
 const Supplier = require('../models/Supplier');
 const TruckArrivalEntry = require('../models/TruckArrivalEntry');
 const { convertToObjectId } = require('../utils/convertId');
+
+// Detect whether current MongoDB connection supports transactions.
+// Transactions require a replica set member or mongos. Standalone MongoDB will not support them.
+let _supportsTransactionsCache = null;
+async function supportsMongoTransactions() {
+  if (process.env.DISABLE_MONGO_TRANSACTIONS === 'true') return false;
+  if (_supportsTransactionsCache !== null) return _supportsTransactionsCache;
+
+  try {
+    const db = mongoose.connection?.db;
+    if (!db) {
+      _supportsTransactionsCache = false;
+      return _supportsTransactionsCache;
+    }
+
+    // "hello" works on modern MongoDB versions (fallback to isMaster for older ones).
+    const admin = db.admin();
+    const hello =
+      (await admin.command({ hello: 1 }).catch(() => null)) ||
+      (await admin.command({ isMaster: 1 }).catch(() => null));
+
+    if (!hello) {
+      _supportsTransactionsCache = false;
+      return _supportsTransactionsCache;
+    }
+
+    // Replica set member -> setName present. Mongos -> msg: "isdbgrid"
+    _supportsTransactionsCache =
+      Boolean(hello.setName) || hello.msg === 'isdbgrid';
+
+    return _supportsTransactionsCache;
+  } catch (e) {
+    _supportsTransactionsCache = false;
+    return _supportsTransactionsCache;
+  }
+}
 
 const toId = (doc) => {
   if (!doc) return null;
@@ -380,7 +417,7 @@ exports.createSale = async (payload) => {
 
 // Create mix order (multiple laad items)
 exports.createMixOrder = async (payload) => {
-  const { customerId, items, qualityGrade, ratePerBag, gatePassNumber } = payload;
+  const { customerId, items, qualityGrade, ratePerBag, gatePassNumber, date, address, truckNumber, brokerName } = payload;
   
   if (!customerId || !Array.isArray(items) || items.length === 0) {
     const e = new Error('customerId and items array are required');
@@ -388,25 +425,37 @@ exports.createMixOrder = async (payload) => {
     throw e;
   }
 
-  // MongoDB session for transaction
-  const session = await Sale.startSession();
-  session.startTransaction();
+  // Convert numeric customerId to ObjectId
+  const customerObjectId = await convertToObjectId(customerId, 'Customer');
+  
+  // Check if customer exists
+  const customer = await Customer.findById(customerObjectId);
+  if (!customer) {
+    const e = new Error(`Customer with ID ${customerId} not found`);
+    e.status = 404; 
+    throw e;
+  }
+
+  // Use MongoDB transactions only when supported (replica set / mongos).
+  // For standalone MongoDB (common in local dev), we use manual rollback to keep data consistent.
+  let session = null;
+  let useTransaction = false;
+  
+  const txSupported = await supportsMongoTransactions();
+  if (txSupported) {
+    session = await Sale.startSession();
+    session.startTransaction();
+    useTransaction = true;
+  }
+
+  const sales = [];
+  const mixOrderDetails = [];
+  const laadItemsToRollback = []; // Track items for manual rollback if needed
 
   try {
-    // Check if customer exists
-    const customer = await Customer.findById(customerId).session(session);
-    if (!customer) {
-      const e = new Error(`Customer with ID ${customerId} not found`);
-      e.status = 404; 
-      throw e;
-    }
-
-    const sales = [];
-    const mixOrderDetails = [];
-
     // Process each item in the mix order
     for (const item of items) {
-      const { laadItemId, bagsSold, ratePerBag: itemRate } = item;
+      const { laadItemId, bagsSold, bagWeight, ratePerBag: itemRate } = item;
       
       if (!laadItemId || !Number.isInteger(bagsSold) || bagsSold <= 0) {
         const e = new Error('Each item must have laadItemId and positive bagsSold');
@@ -414,11 +463,27 @@ exports.createMixOrder = async (payload) => {
         throw e;
       }
 
+      if (!bagWeight || bagWeight <= 0) {
+        const e = new Error('Each item must have positive bagWeight');
+        e.status = 400; 
+        throw e;
+      }
+
+      // Convert numeric laadItemId to ObjectId
+      const laadItemObjectId = await convertToObjectId(laadItemId, 'LaadItem');
+
       // Check if laadItem exists
-      const laadItem = await LaadItem.findById(laadItemId)
-        .populate('itemId')
-        .populate('laadId')
-        .session(session);
+      let laadItem;
+      if (useTransaction && session) {
+        laadItem = await LaadItem.findById(laadItemObjectId)
+          .populate('itemId')
+          .populate('laadId')
+          .session(session);
+      } else {
+        laadItem = await LaadItem.findById(laadItemObjectId)
+          .populate('itemId')
+          .populate('laadId');
+      }
       
       if (!laadItem) {
         const e = new Error(`LaadItem with ID ${laadItemId} not found`);
@@ -441,30 +506,53 @@ exports.createMixOrder = async (payload) => {
 
       // Create sale for this item
       const sale = new Sale({
-        customerId,
-        laadItemId,
+        customerId: customerObjectId,
+        laadItemId: laadItemObjectId,
         bagsSold,
+        bagWeight: parseFloat(bagWeight),
         ratePerBag: rate ? parseFloat(rate) : null,
         totalAmount: totalAmount,
-        qualityGrade: qualityGrade || null,
+        qualityGrade: qualityGrade || laadItem.qualityGrade || null,
         isMixOrder: true,
         gatePassNumber: gatePassNumber || null,
+        date: date ? new Date(date) : new Date(),
+        address: address || null,
+        truckNumber: truckNumber || null,
+        brokerName: brokerName || null,
+        laadNumber: laadItem.laadId ? laadItem.laadId.laadNumber : null,
         mixOrderDetails: null // Will be updated after all sales are created
       });
 
-      await sale.save({ session });
+      if (useTransaction && session) {
+        await sale.save({ session });
+      } else {
+        await sale.save();
+      }
+
+      // Track for rollback
+      laadItemsToRollback.push({
+        laadItemId: laadItemObjectId,
+        originalBags: laadItem.remainingBags,
+        bagsSold: bagsSold
+      });
 
       // Update remaining bags
       laadItem.remainingBags -= bagsSold;
-      await laadItem.save({ session });
+      if (useTransaction && session) {
+        await laadItem.save({ session });
+      } else {
+        await laadItem.save();
+      }
 
       sales.push(sale);
 
       mixOrderDetails.push({
         saleId: sale._id.toString(),
-        laadItemId: laadItemId.toString(),
+        laadItemId: laadItemObjectId.toString(),
         bagsSold,
+        bagWeight: parseFloat(bagWeight),
         itemName: laadItem.itemId ? laadItem.itemId.name : 'Unknown',
+        qualityGrade: laadItem.qualityGrade || null,
         laadNumber: laadItem.laadId ? laadItem.laadId.laadNumber : 'Unknown'
       });
     }
@@ -472,11 +560,17 @@ exports.createMixOrder = async (payload) => {
     // Update all sales with mix order details
     for (const sale of sales) {
       sale.mixOrderDetails = mixOrderDetails;
-      await sale.save({ session });
+      if (useTransaction && session) {
+        await sale.save({ session });
+      } else {
+        await sale.save();
+      }
     }
 
-    // Commit transaction
-    await session.commitTransaction();
+    // Commit transaction if using transactions
+    if (useTransaction && session) {
+      await session.commitTransaction();
+    }
 
     // Populate sales
     const populatedSales = await Promise.all(
@@ -500,10 +594,43 @@ exports.createMixOrder = async (payload) => {
       totalBags: items.reduce((sum, item) => sum + item.bagsSold, 0)
     };
   } catch (error) {
-    await session.abortTransaction();
+    // Rollback: delete created sales and restore stock
+    if (useTransaction && session) {
+      try {
+        await session.abortTransaction();
+      } catch (abortError) {
+        // Ignore abort errors
+      }
+    } else {
+      // Manual rollback: delete sales and restore stock
+      for (const sale of sales) {
+        try {
+          await Sale.findByIdAndDelete(sale._id);
+        } catch (deleteError) {
+          // Log but continue
+          console.error('Error deleting sale during rollback:', deleteError);
+        }
+      }
+      
+      // Restore stock
+      for (const item of laadItemsToRollback) {
+        try {
+          await LaadItem.findByIdAndUpdate(
+            item.laadItemId,
+            { $inc: { remainingBags: item.bagsSold } }
+          );
+        } catch (restoreError) {
+          // Log but continue
+          console.error('Error restoring stock during rollback:', restoreError);
+        }
+      }
+    }
+    
     throw error;
   } finally {
-    session.endSession();
+    if (session) {
+      session.endSession();
+    }
   }
 };
 

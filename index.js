@@ -85,6 +85,14 @@ app.use(cors({
       return callback(null, true);
     }
     
+    // In development, always allow localhost origins
+    if (!isProduction) {
+      if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
+        logger.info(`✅ Allowing CORS from localhost: ${origin} (development mode)`);
+        return callback(null, true);
+      }
+    }
+    
     // In production without explicit origins, allow all HTTPS origins
     // This is a fallback - it's better to set ALLOWED_ORIGINS or FRONTEND_URL env vars
     if (isProduction && !hasExplicitOrigins) {
