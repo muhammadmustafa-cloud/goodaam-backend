@@ -1065,49 +1065,174 @@ exports.updateSale = async (id, payload) => {
     }
 
     const oldItems = Array.isArray(sale.items) ? sale.items : [];
-    const restored = []; // [{ laadItemId, bagsSold }]
-    const deducted = []; // [{ laadItemId, bagsSold }]
+    const stockUpdates = []; // Track all stock changes for rollback
+
+    // Build a map of old items by ObjectId for exact matching
+    // Use both ObjectId string and numeric ID for matching flexibility
+    const oldItemsMap = new Map();
+    const oldItemsMapByNumeric = new Map(); // For numeric ID matching
+    
+    for (const oldLine of oldItems) {
+      if (!oldLine?.laadItemId || !oldLine?.bagsSold) continue;
+      
+      // Handle different formats of laadItemId:
+      // 1. Object (populated from DB) - use _id or id
+      // 2. String (ID from formatSale) - use as is
+      // 3. Number (numeric ID) - use as is
+      let oldIdObj = oldLine.laadItemId;
+      if (typeof oldLine.laadItemId === 'object') {
+        oldIdObj = oldLine.laadItemId._id || oldLine.laadItemId.id || oldLine.laadItemId;
+      }
+      
+      const oldLaadItemObjectId = await convertToObjectId(oldIdObj, 'LaadItem');
+      const oldIdStr = oldLaadItemObjectId.toString();
+      
+      // Store by ObjectId string
+      oldItemsMap.set(oldIdStr, {
+        laadItemId: oldLaadItemObjectId,
+        bagsSold: oldLine.bagsSold
+      });
+      
+      // Also store by numeric ID if available (for matching with numeric IDs from frontend)
+      // Check both the original value and the converted ObjectId's numeric representation
+      const originalId = typeof oldLine.laadItemId === 'object' 
+        ? (oldLine.laadItemId.id || oldLine.laadItemId._id?.toString() || oldLine.laadItemId.toString())
+        : oldLine.laadItemId;
+      
+      if (typeof originalId === 'number' || (typeof originalId === 'string' && /^\d+$/.test(originalId))) {
+        const numericId = typeof originalId === 'number' ? originalId : parseInt(originalId, 10);
+        oldItemsMapByNumeric.set(numericId, {
+          laadItemId: oldLaadItemObjectId,
+          bagsSold: oldLine.bagsSold
+        });
+      }
+      
+      // Also try to extract numeric ID from ObjectId if it's a numeric ObjectId
+      // Some systems use numeric ObjectIds
+      try {
+        const objIdStr = oldLaadItemObjectId.toString();
+        // If ObjectId string looks like it contains a number, try matching by that
+        const numericMatch = objIdStr.match(/\d+/);
+        if (numericMatch && numericMatch[0].length >= 3) {
+          const extractedNum = parseInt(numericMatch[0], 10);
+          if (!oldItemsMapByNumeric.has(extractedNum)) {
+            oldItemsMapByNumeric.set(extractedNum, {
+              laadItemId: oldLaadItemObjectId,
+              bagsSold: oldLine.bagsSold
+            });
+          }
+        }
+      } catch (e) {
+        // Ignore extraction errors
+      }
+    }
 
     try {
-      // 1) Restore old stock first
-      for (const oldLine of oldItems) {
-        if (!oldLine?.laadItemId || !oldLine?.bagsSold) continue;
-        const inc = { $inc: { remainingBags: oldLine.bagsSold } };
-        if (useTransaction && session) {
-          await LaadItem.findByIdAndUpdate(oldLine.laadItemId, inc).session(session);
-        } else {
-          await LaadItem.findByIdAndUpdate(oldLine.laadItemId, inc);
-        }
-        restored.push({ laadItemId: oldLine.laadItemId, bagsSold: oldLine.bagsSold });
-      }
-
-      // 2) Deduct new stock (atomically with >= check)
       let totalBags = 0;
       let totalWeight = 0;
       let totalAmountValue = 0;
       let hasAnyAmount = false;
-
       const normalizedItems = [];
+      const processedOldItems = new Set(); // Track which old items we've processed
+
+      // Process new items: calculate net changes and apply stock updates
       for (const line of items) {
         const newLaadItemId = await convertToObjectId(line.laadItemId, 'LaadItem');
         const lineBags = parseInt(line.bagsSold, 10);
         const lineBagWeight = parseFloat(line.bagWeight);
+        const newIdStr = newLaadItemId.toString();
 
-        const query = { _id: newLaadItemId, remainingBags: { $gte: lineBags } };
-        const update = { $inc: { remainingBags: -lineBags } };
-        const opts = { new: true };
+        // Check if this item existed in old sale
+        // Try multiple matching strategies for robustness
+        let oldItemData = oldItemsMap.get(newIdStr);
+        
+        // If not found by ObjectId string, try numeric ID matching
+        if (!oldItemData) {
+          if (typeof line.laadItemId === 'number') {
+            oldItemData = oldItemsMapByNumeric.get(line.laadItemId);
+          } else if (typeof line.laadItemId === 'string' && /^\d+$/.test(line.laadItemId)) {
+            const numericId = parseInt(line.laadItemId, 10);
+            oldItemData = oldItemsMapByNumeric.get(numericId);
+          }
+        }
+        
+        // If still not found, try matching by converting new ID to all possible formats
+        if (!oldItemData) {
+          // Try to find by comparing all old items' ObjectIds with new ObjectId
+          for (const [oldIdStr, oldData] of oldItemsMap.entries()) {
+            if (oldData.laadItemId.equals(newLaadItemId)) {
+              oldItemData = oldData;
+              break;
+            }
+          }
+        }
+        
+        const oldBags = oldItemData ? oldItemData.bagsSold : 0;
 
-        const updated = useTransaction && session
-          ? await LaadItem.findOneAndUpdate(query, update, opts).session(session)
-          : await LaadItem.findOneAndUpdate(query, update, opts);
-
-        if (!updated) {
-          const e = new Error(`Insufficient stock for LaadItem ${line.laadItemId}`);
-          e.status = 400;
-          throw e;
+        if (oldItemData) {
+          processedOldItems.add(newIdStr);
         }
 
-        deducted.push({ laadItemId: newLaadItemId, bagsSold: lineBags });
+        // Handle stock update based on whether this is a new item or existing item
+        if (oldBags === 0) {
+          // New item (wasn't in old sale): deduct normally
+          const query = { _id: newLaadItemId, remainingBags: { $gte: lineBags } };
+          const update = { $inc: { remainingBags: -lineBags } };
+          const opts = { new: true };
+
+          const updated = useTransaction && session
+            ? await LaadItem.findOneAndUpdate(query, update, opts).session(session)
+            : await LaadItem.findOneAndUpdate(query, update, opts);
+
+          if (!updated) {
+            const e = new Error(`Insufficient stock for LaadItem ${line.laadItemId}. ` +
+              `Requested: ${lineBags} bags. ` +
+              `Current stock is insufficient.`);
+            e.status = 400;
+            throw e;
+          }
+          stockUpdates.push({ laadItemId: newLaadItemId, change: -lineBags });
+        } else {
+          // Existing item: calculate net change
+          const netChange = lineBags - oldBags;
+
+          if (netChange === 0) {
+            // Same item, same quantity: no stock update needed
+            // This handles the main use case: updating other fields (gate pass, etc.) without changing quantities
+          } else if (netChange > 0) {
+            // Increasing quantity: need to deduct additional bags
+            // Current stock already has oldBags deducted, so we need:
+            // current stock >= netChange (the additional bags needed)
+            const query = { _id: newLaadItemId, remainingBags: { $gte: netChange } };
+            const update = { $inc: { remainingBags: -netChange } };
+            const opts = { new: true };
+
+            const updated = useTransaction && session
+              ? await LaadItem.findOneAndUpdate(query, update, opts).session(session)
+              : await LaadItem.findOneAndUpdate(query, update, opts);
+
+            if (!updated) {
+              const e = new Error(`Insufficient stock for LaadItem ${line.laadItemId}. ` +
+                `Original sale had ${oldBags} bags. ` +
+                `New quantity is ${lineBags} bags (need ${netChange} more bags). ` +
+                `Current available stock is insufficient for the increase.`);
+              e.status = 400;
+              throw e;
+            }
+            stockUpdates.push({ laadItemId: newLaadItemId, change: -netChange });
+          } else {
+            // Decreasing quantity: need to restore some bags (netChange is negative)
+            const restoreBags = Math.abs(netChange);
+            const inc = { $inc: { remainingBags: restoreBags } };
+            
+            if (useTransaction && session) {
+              await LaadItem.findByIdAndUpdate(newLaadItemId, inc).session(session);
+            } else {
+              await LaadItem.findByIdAndUpdate(newLaadItemId, inc);
+            }
+            stockUpdates.push({ laadItemId: newLaadItemId, change: restoreBags });
+          }
+        }
 
         const effectiveRate =
           line?.ratePerBag !== undefined && line?.ratePerBag !== null && line?.ratePerBag !== ''
@@ -1134,6 +1259,21 @@ exports.updateSale = async (id, payload) => {
           totalAmount: lineTotalAmount,
           qualityGrade: line?.qualityGrade || null,
         });
+      }
+
+      // Restore stock for items that were removed (exist in old but not in new)
+      for (const [oldIdStr, oldItemData] of oldItemsMap.entries()) {
+        if (!processedOldItems.has(oldIdStr)) {
+          // This item was in old sale but removed in update - restore its stock
+          const inc = { $inc: { remainingBags: oldItemData.bagsSold } };
+          
+          if (useTransaction && session) {
+            await LaadItem.findByIdAndUpdate(oldItemData.laadItemId, inc).session(session);
+          } else {
+            await LaadItem.findByIdAndUpdate(oldItemData.laadItemId, inc);
+          }
+          stockUpdates.push({ laadItemId: oldItemData.laadItemId, change: oldItemData.bagsSold });
+        }
       }
 
       sale.customerId = customerObjectId;
@@ -1181,19 +1321,14 @@ exports.updateSale = async (id, payload) => {
           // ignore
         }
       } else {
-        // Manual rollback: undo deductions, re-apply old deductions by reversing restores
-        for (const d of deducted) {
+        // Manual rollback: reverse all stock changes
+        for (const update of stockUpdates) {
           try {
-            await LaadItem.findByIdAndUpdate(d.laadItemId, { $inc: { remainingBags: d.bagsSold } });
+            // Reverse the change: if we deducted, add back; if we restored, deduct again
+            const reverseChange = update.change ? -update.change : -update.bagsSold;
+            await LaadItem.findByIdAndUpdate(update.laadItemId, { $inc: { remainingBags: reverseChange } });
           } catch {
-            // ignore
-          }
-        }
-        for (const r of restored) {
-          try {
-            await LaadItem.findByIdAndUpdate(r.laadItemId, { $inc: { remainingBags: -r.bagsSold } });
-          } catch {
-            // ignore
+            // ignore rollback errors
           }
         }
       }
