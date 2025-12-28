@@ -742,7 +742,7 @@ exports.getLaadReport = async (req, res) => {
 
     // Calculate weight tracking for each item
     const incomingItems = await Promise.all(laadItems.map(async (item) => {
-      // Calculate total weight for this item
+      // Calculate total weight for this item (fallback to weightPerBag * totalBags)
       const totalWeight = item.faisalabadWeight || item.weightFromJacobabad || 
         (item.weightPerBag && item.totalBags ? item.weightPerBag * item.totalBags : null);
 
@@ -751,6 +751,20 @@ exports.getLaadReport = async (req, res) => {
       
       // Calculate remaining weight
       const remainingWeight = totalWeight ? totalWeight - soldWeight : null;
+      
+      // Calculate remaining Faisalabad weight (proportional to remaining bags)
+      let remainingFaisalabadWeight = null;
+      if (item.faisalabadWeight && item.totalBags > 0) {
+        const ratio = (item.remainingBags || 0) / item.totalBags;
+        remainingFaisalabadWeight = item.faisalabadWeight * ratio;
+      }
+      
+      // Calculate remaining JCD (Jacobabad) weight (proportional to remaining bags)
+      let remainingJcdWeight = null;
+      if (item.weightFromJacobabad && item.totalBags > 0) {
+        const ratio = (item.remainingBags || 0) / item.totalBags;
+        remainingJcdWeight = item.weightFromJacobabad * ratio;
+      }
       
       return {
         id: item.id || item._id.toString(),
@@ -766,6 +780,8 @@ exports.getLaadReport = async (req, res) => {
         totalWeight: totalWeight,
         soldWeight: soldWeight > 0 ? soldWeight : null,
         remainingWeight: remainingWeight,
+        remainingFaisalabadWeight: remainingFaisalabadWeight ? Math.round(remainingFaisalabadWeight * 100) / 100 : null,
+        remainingJcdWeight: remainingJcdWeight ? Math.round(remainingJcdWeight * 100) / 100 : null,
         ratePerBag: parseFloat(item.ratePerBag) || 0,
         totalAmount: parseFloat(item.totalAmount) || 0,
       };
@@ -1017,11 +1033,27 @@ exports.getItemReport = async (req, res) => {
       // Calculate remaining weight
       const remainingWeight = totalWeight ? totalWeight - soldWeight : null;
       
+      // Calculate remaining Faisalabad weight (proportional to remaining bags)
+      let remainingFaisalabadWeight = null;
+      if (laadItem.faisalabadWeight && laadItem.totalBags > 0) {
+        const ratio = (laadItem.remainingBags || 0) / laadItem.totalBags;
+        remainingFaisalabadWeight = laadItem.faisalabadWeight * ratio;
+      }
+      
+      // Calculate remaining JCD (Jacobabad) weight (proportional to remaining bags)
+      let remainingJcdWeight = null;
+      if (laadItem.weightFromJacobabad && laadItem.totalBags > 0) {
+        const ratio = (laadItem.remainingBags || 0) / laadItem.totalBags;
+        remainingJcdWeight = laadItem.weightFromJacobabad * ratio;
+      }
+      
       return {
         ...laadItem,
         totalWeight: totalWeight,
         soldWeight: soldWeight > 0 ? soldWeight : null,
         remainingWeight: remainingWeight,
+        remainingFaisalabadWeight: remainingFaisalabadWeight ? Math.round(remainingFaisalabadWeight * 100) / 100 : null,
+        remainingJcdWeight: remainingJcdWeight ? Math.round(remainingJcdWeight * 100) / 100 : null,
       };
     }));
 
@@ -1136,6 +1168,8 @@ exports.getItemReport = async (req, res) => {
             totalWeight: entryTotalWeight,
             soldWeight: null, // Duplicates can't be sold
             remainingWeight: 0, // Duplicates don't add to stock
+            remainingFaisalabadWeight: null, // Duplicates don't add to stock
+            remainingJcdWeight: null, // Duplicates don't add to stock
             ratePerBag: parseFloat(entryItem.ratePerBag) || 0,
             totalAmount: parseFloat(entryItem.totalAmount) || 0,
           }],
@@ -1169,6 +1203,8 @@ exports.getItemReport = async (req, res) => {
           totalWeight: laadItem.totalWeight || null,
           soldWeight: laadItem.soldWeight || null,
           remainingWeight: laadItem.remainingWeight || null,
+          remainingFaisalabadWeight: laadItem.remainingFaisalabadWeight || null,
+          remainingJcdWeight: laadItem.remainingJcdWeight || null,
           ratePerBag: parseFloat(laadItem.ratePerBag) || 0,
           totalAmount: parseFloat(laadItem.totalAmount) || 0,
         }],
