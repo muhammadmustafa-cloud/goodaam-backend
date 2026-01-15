@@ -518,9 +518,32 @@ async function createSaleOrderFromItems(payload) {
 
       const laadItemObjectId = await convertToObjectId(lineLaadItemId, 'LaadItem');
 
-      // Atomic stock deduction
-      const query = { _id: laadItemObjectId, remainingBags: { $gte: lineBags } };
-      const update = { $inc: { remainingBags: -lineBags } };
+      // NEW: Weight-based stock deduction
+      // Calculate weight to deduct and update remaining bags accordingly
+      const weightToDeduct = lineBags * lineBagWeight;
+      
+      // Get current laadItem to find original bag weight for calculation
+      const currentLaadItem = await LaadItem.findById(laadItemObjectId);
+      if (!currentLaadItem) {
+        const e = new Error(`LaadItem ${lineLaadItemId} not found`);
+        e.status = 404;
+        throw e;
+      }
+      
+      const originalBagWeight = currentLaadItem.weightPerBag || currentLaadItem.itemId?.bagWeight || 50;
+      const bagsToDeduct = Math.ceil(weightToDeduct / originalBagWeight); // Convert weight to equivalent bags
+      
+      console.log(`DEBUG SALE: Processing ${lineLaadItemId}`);
+      console.log(`  - lineBags: ${lineBags}`);
+      console.log(`  - lineBagWeight: ${lineBagWeight}kg`);
+      console.log(`  - weightToDeduct: ${weightToDeduct}kg`);
+      console.log(`  - currentLaadItem.remainingBags: ${currentLaadItem.remainingBags}`);
+      console.log(`  - originalBagWeight: ${originalBagWeight}kg`);
+      console.log(`  - bagsToDeduct: ${bagsToDeduct}`);
+      
+      // Atomic stock deduction using weight-based calculation
+      const query = { _id: laadItemObjectId, remainingBags: { $gte: bagsToDeduct } };
+      const update = { $inc: { remainingBags: -bagsToDeduct } };
       const opts = { new: true };
 
       const updatedLaadItem = useTransaction && session
@@ -528,12 +551,21 @@ async function createSaleOrderFromItems(payload) {
         : await LaadItem.findOneAndUpdate(query, update, opts);
 
       if (!updatedLaadItem) {
-        const e = new Error(`Insufficient stock for LaadItem ${lineLaadItemId}`);
+        const e = new Error(`Insufficient stock for LaadItem ${lineLaadItemId}. Available: ${currentLaadItem.remainingBags} bags, Required: ${bagsToDeduct} bags (${weightToDeduct}kg)`);
         e.status = 400;
         throw e;
       }
 
-      stockDeductions.push({ laadItemId: laadItemObjectId, bagsSold: lineBags });
+      console.log(`DEBUG SALE: After update:`);
+      console.log(`  - updatedLaadItem.remainingBags: ${updatedLaadItem.remainingBags}`);
+      console.log(`  - weight deducted: ${bagsToDeduct} bags (${weightToDeduct}kg)`);
+
+      stockDeductions.push({ 
+        laadItemId: laadItemObjectId, 
+        bagsSold: lineBags,
+        weightSold: weightToDeduct,
+        bagsDeducted: bagsToDeduct
+      });
 
       const effectiveRate =
         line?.ratePerBag !== undefined && line?.ratePerBag !== null && line?.ratePerBag !== ''
@@ -648,18 +680,8 @@ async function createSaleOrderFromItems(payload) {
 exports.createSale = async (payload) => {
   // Unified API: allow items[] for both single and multi-item sales
   if (Array.isArray(payload?.items) && payload.items.length > 0) {
-    if (payload.items.length === 1) {
-      const first = payload.items[0] || {};
-      return createSingleSale({
-        ...payload,
-        laadItemId: first.laadItemId,
-        bagsSold: Number.isInteger(first.bagsSold) ? first.bagsSold : parseInt(first.bagsSold, 10),
-        bagWeight: Number.isFinite(first.bagWeight) ? first.bagWeight : parseFloat(first.bagWeight),
-        ratePerBag: first.ratePerBag ?? payload.ratePerBag ?? null,
-        qualityGrade: first.qualityGrade ?? payload.qualityGrade ?? null,
-      });
-    }
-
+    // NEW: Always use weight-based createSaleOrderFromItems for consistency
+    // This ensures weight-based calculations work for both single and multi-item sales
     return createSaleOrderFromItems(payload);
   }
 
@@ -1175,9 +1197,22 @@ exports.updateSale = async (id, payload) => {
 
         // Handle stock update based on whether this is a new item or existing item
         if (oldBags === 0) {
-          // New item (wasn't in old sale): deduct normally
-          const query = { _id: newLaadItemId, remainingBags: { $gte: lineBags } };
-          const update = { $inc: { remainingBags: -lineBags } };
+          // New item (wasn't in old sale): deduct using weight-based calculation
+          const weightToDeduct = lineBags * lineBagWeight;
+          
+          // Get current laadItem to find original bag weight for calculation
+          const currentLaadItem = await LaadItem.findById(newLaadItemId);
+          if (!currentLaadItem) {
+            const e = new Error(`LaadItem ${line.laadItemId} not found`);
+            e.status = 404;
+            throw e;
+          }
+          
+          const originalBagWeight = currentLaadItem.weightPerBag || currentLaadItem.itemId?.bagWeight || 50;
+          const bagsToDeduct = Math.ceil(weightToDeduct / originalBagWeight); // Convert weight to equivalent bags
+          
+          const query = { _id: newLaadItemId, remainingBags: { $gte: bagsToDeduct } };
+          const update = { $inc: { remainingBags: -bagsToDeduct } };
           const opts = { new: true };
 
           const updated = useTransaction && session
@@ -1186,12 +1221,13 @@ exports.updateSale = async (id, payload) => {
 
           if (!updated) {
             const e = new Error(`Insufficient stock for LaadItem ${line.laadItemId}. ` +
-              `Requested: ${lineBags} bags. ` +
-              `Current stock is insufficient.`);
+              `Requested: ${lineBags} bags (${weightToDeduct}kg). ` +
+              `Available: ${currentLaadItem.remainingBags} bags. ` +
+              `Required: ${bagsToDeduct} bags equivalent.`);
             e.status = 400;
             throw e;
           }
-          stockUpdates.push({ laadItemId: newLaadItemId, change: -lineBags });
+          stockUpdates.push({ laadItemId: newLaadItemId, change: -bagsToDeduct, weightChange: -weightToDeduct });
         } else {
           // Existing item: calculate net change
           const netChange = lineBags - oldBags;
@@ -1200,11 +1236,24 @@ exports.updateSale = async (id, payload) => {
             // Same item, same quantity: no stock update needed
             // This handles the main use case: updating other fields (gate pass, etc.) without changing quantities
           } else if (netChange > 0) {
-            // Increasing quantity: need to deduct additional bags
+            // Increasing quantity: need to deduct additional bags using weight-based calculation
+            const additionalWeight = netChange * lineBagWeight;
+            
+            // Get current laadItem to find original bag weight for calculation
+            const currentLaadItem = await LaadItem.findById(newLaadItemId);
+            if (!currentLaadItem) {
+              const e = new Error(`LaadItem ${line.laadItemId} not found`);
+              e.status = 404;
+              throw e;
+            }
+            
+            const originalBagWeight = currentLaadItem.weightPerBag || currentLaadItem.itemId?.bagWeight || 50;
+            const bagsToDeduct = Math.ceil(additionalWeight / originalBagWeight); // Convert weight to equivalent bags
+            
             // Current stock already has oldBags deducted, so we need:
-            // current stock >= netChange (the additional bags needed)
-            const query = { _id: newLaadItemId, remainingBags: { $gte: netChange } };
-            const update = { $inc: { remainingBags: -netChange } };
+            // current stock >= bagsToDeduct (the additional bags needed)
+            const query = { _id: newLaadItemId, remainingBags: { $gte: bagsToDeduct } };
+            const update = { $inc: { remainingBags: -bagsToDeduct } };
             const opts = { new: true };
 
             const updated = useTransaction && session
@@ -1214,23 +1263,31 @@ exports.updateSale = async (id, payload) => {
             if (!updated) {
               const e = new Error(`Insufficient stock for LaadItem ${line.laadItemId}. ` +
                 `Original sale had ${oldBags} bags. ` +
-                `New quantity is ${lineBags} bags (need ${netChange} more bags). ` +
-                `Current available stock is insufficient for the increase.`);
+                `New quantity is ${lineBags} bags (need ${netChange} more bags = ${additionalWeight}kg). ` +
+                `Available: ${currentLaadItem.remainingBags} bags. ` +
+                `Required: ${bagsToDeduct} bags equivalent.`);
               e.status = 400;
               throw e;
             }
-            stockUpdates.push({ laadItemId: newLaadItemId, change: -netChange });
+            stockUpdates.push({ laadItemId: newLaadItemId, change: -bagsToDeduct, weightChange: -additionalWeight });
           } else {
             // Decreasing quantity: need to restore some bags (netChange is negative)
             const restoreBags = Math.abs(netChange);
-            const inc = { $inc: { remainingBags: restoreBags } };
+            const restoreWeight = restoreBags * lineBagWeight;
+            
+            // Get current laadItem to find original bag weight for calculation
+            const currentLaadItem = await LaadItem.findById(newLaadItemId);
+            const originalBagWeight = currentLaadItem?.weightPerBag || currentLaadItem?.itemId?.bagWeight || 50;
+            const bagsToRestore = Math.floor(restoreWeight / originalBagWeight); // Convert weight to equivalent bags
+            
+            const inc = { $inc: { remainingBags: bagsToRestore } };
             
             if (useTransaction && session) {
               await LaadItem.findByIdAndUpdate(newLaadItemId, inc).session(session);
             } else {
               await LaadItem.findByIdAndUpdate(newLaadItemId, inc);
             }
-            stockUpdates.push({ laadItemId: newLaadItemId, change: restoreBags });
+            stockUpdates.push({ laadItemId: newLaadItemId, change: bagsToRestore, weightChange: restoreWeight });
           }
         }
 
