@@ -18,6 +18,11 @@ const saleItemSchema = new mongoose.Schema(
       required: true,
       min: 0.1,
     },
+    totalKantaWeight: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
     ratePerBag: {
       type: Number,
     },

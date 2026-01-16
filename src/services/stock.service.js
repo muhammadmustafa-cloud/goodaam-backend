@@ -33,11 +33,6 @@ exports.getCombinedStockItems = async () => {
       .populate('laadId')
       .lean();
 
-    console.log('DEBUG: Found laadItems:', laadItems.length);
-    laadItems.forEach(item => {
-      console.log(`DEBUG: Item ${item.itemId?.name} - remainingBags: ${item.remainingBags}, weightPerBag: ${item.weightPerBag}`);
-    });
-
     // Combine items with same: itemName + qualityGrade + laadId
     const combinedItemsMap = new Map(); // Key: itemName-qualityGrade-laadId
 
@@ -56,11 +51,8 @@ exports.getCombinedStockItems = async () => {
       const totalWeight = (item.totalBags || 0) * originalBagWeight;
       const remainingWeight = (item.remainingBags || 0) * originalBagWeight;
 
-      console.log(`DEBUG: Processing ${item.itemId.name} - totalBags: ${item.totalBags}, remainingBags: ${item.remainingBags}, originalBagWeight: ${originalBagWeight}, remainingWeight: ${remainingWeight}`);
-
       // Skip items with no remaining weight
       if (remainingWeight <= 0) {
-        console.log(`DEBUG: Skipping ${item.itemId.name} - no remaining weight`);
         return;
       }
 
@@ -210,11 +202,6 @@ exports.getCombinedStockItems = async () => {
       const calculatedRemainingBags = item.originalBagWeight > 0 
         ? Math.floor(item.remainingWeight / item.originalBagWeight)
         : item.originalRemainingBags || 0;
-
-      console.log(`DEBUG: Final calculation for ${item.item.name}:`);
-      console.log(`  - remainingWeight: ${item.remainingWeight}kg`);
-      console.log(`  - originalBagWeight: ${item.originalBagWeight}kg`);
-      console.log(`  - calculatedRemainingBags: ${calculatedRemainingBags}`);
 
       return {
         id: item.id,

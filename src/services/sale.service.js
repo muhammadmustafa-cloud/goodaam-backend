@@ -533,14 +533,6 @@ async function createSaleOrderFromItems(payload) {
       const originalBagWeight = currentLaadItem.weightPerBag || currentLaadItem.itemId?.bagWeight || 50;
       const bagsToDeduct = Math.ceil(weightToDeduct / originalBagWeight); // Convert weight to equivalent bags
       
-      console.log(`DEBUG SALE: Processing ${lineLaadItemId}`);
-      console.log(`  - lineBags: ${lineBags}`);
-      console.log(`  - lineBagWeight: ${lineBagWeight}kg`);
-      console.log(`  - weightToDeduct: ${weightToDeduct}kg`);
-      console.log(`  - currentLaadItem.remainingBags: ${currentLaadItem.remainingBags}`);
-      console.log(`  - originalBagWeight: ${originalBagWeight}kg`);
-      console.log(`  - bagsToDeduct: ${bagsToDeduct}`);
-      
       // Atomic stock deduction using weight-based calculation
       const query = { _id: laadItemObjectId, remainingBags: { $gte: bagsToDeduct } };
       const update = { $inc: { remainingBags: -bagsToDeduct } };
@@ -555,10 +547,6 @@ async function createSaleOrderFromItems(payload) {
         e.status = 400;
         throw e;
       }
-
-      console.log(`DEBUG SALE: After update:`);
-      console.log(`  - updatedLaadItem.remainingBags: ${updatedLaadItem.remainingBags}`);
-      console.log(`  - weight deducted: ${bagsToDeduct} bags (${weightToDeduct}kg)`);
 
       stockDeductions.push({ 
         laadItemId: laadItemObjectId, 
@@ -583,12 +571,17 @@ async function createSaleOrderFromItems(payload) {
       }
 
       totalBags += lineBags;
-      totalWeight += lineBags * lineBagWeight;
+      // For display: If totalKantaWeight is entered, use it as total weight
+      // Otherwise, use calculated weight (bags × bagWeight)
+      const displayWeight = parseFloat(line?.totalKantaWeight) || 0;
+      const calculatedWeight = lineBags * lineBagWeight;
+      totalWeight += displayWeight > 0 ? displayWeight : calculatedWeight;
 
       orderItems.push({
         laadItemId: laadItemObjectId,
         bagsSold: lineBags,
         bagWeight: lineBagWeight,
+        totalKantaWeight: parseFloat(line?.totalKantaWeight) || 0,
         ratePerBag: effectiveRate !== null && Number.isFinite(effectiveRate) ? effectiveRate : null,
         totalAmount: lineTotalAmount,
         qualityGrade: line?.qualityGrade || qualityGrade || null,
@@ -783,6 +776,7 @@ exports.createMixOrder = async (payload) => {
         laadItemId: laadItemObjectId,
         bagsSold,
         bagWeight: parseFloat(bagWeight),
+        totalKantaWeight: parseFloat(item?.totalKantaWeight) || 0,
         ratePerBag: rate ? parseFloat(rate) : null,
         totalAmount: totalAmount,
         qualityGrade: qualityGrade || laadItem.qualityGrade || null,
@@ -824,6 +818,7 @@ exports.createMixOrder = async (payload) => {
         laadItemId: laadItemObjectId.toString(),
         bagsSold,
         bagWeight: parseFloat(bagWeight),
+        totalKantaWeight: parseFloat(item?.totalKantaWeight) || 0,
         itemName: laadItem.itemId ? laadItem.itemId.name : 'Unknown',
         qualityGrade: laadItem.qualityGrade || null,
         laadNumber: laadItem.laadId ? laadItem.laadId.laadNumber : 'Unknown'
