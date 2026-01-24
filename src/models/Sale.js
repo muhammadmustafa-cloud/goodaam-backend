@@ -126,6 +126,18 @@ const saleSchema = new mongoose.Schema({
     trim: true,
     index: true,
     comment: 'Gate pass number for sale tracking'
+  },
+  itemName: {
+    type: String,
+    trim: true,
+    comment: 'Item name for analytics (redundant but faster than lookup)'
+  },
+  itemCategory: {
+    type: String,
+    enum: ['daal', 'channa'],
+    default: 'daal',
+    index: true,
+    comment: 'Item category for analytics filtering'
   }
 }, {
   timestamps: true
@@ -139,6 +151,7 @@ saleSchema.index({ date: -1 });
 saleSchema.index({ laadNumber: 1 });
 saleSchema.index({ truckNumber: 1 });
 saleSchema.index({ gatePassNumber: 1 });
+saleSchema.index({ itemCategory: 1 });
 
 module.exports = mongoose.model('Sale', saleSchema);
 

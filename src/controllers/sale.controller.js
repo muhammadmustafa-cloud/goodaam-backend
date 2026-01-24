@@ -53,3 +53,14 @@ exports.getMixOrders = async (req, res, next) => {
     res.json({ success: true, data: mixOrders });
   } catch (err) { next(err); }
 };
+
+exports.getSalesAnalytics = async (req, res, next) => {
+  try {
+    const filters = {
+      category: req.query.category,
+      dateRange: req.query.dateRange
+    };
+    const analytics = await svc.getSalesAnalytics(filters);
+    res.json({ success: true, data: analytics });
+  } catch (err) { next(err); }
+};

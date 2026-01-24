@@ -2,13 +2,47 @@ const Item = require('../models/Item');
 const LaadItem = require('../models/LaadItem');
 
 exports.createItem = async (payload) => {
-  // expecting { name, quality }
+  // expecting { name, quality, category }
   const item = new Item(payload);
   return await item.save();
 };
 
 exports.getItems = async () => {
   return await Item.find().sort({ id: 1 });
+};
+
+exports.updateItem = async (id, payload) => {
+  // Try to find by numeric ID first, then by ObjectId
+  let item = await Item.findOne({ id: id });
+  if (!item) {
+    // Try by ObjectId if numeric ID not found
+    item = await Item.findById(id);
+  }
+  
+  if (!item) {
+    return null;
+  }
+  
+  // Update the found item
+  Object.assign(item, payload);
+  return await item.save();
+};
+
+exports.deleteItem = async (id) => {
+  // Try to find by numeric ID first, then by ObjectId
+  let item = await Item.findOne({ id: id });
+  if (!item) {
+    // Try by ObjectId if numeric ID not found
+    item = await Item.findById(id);
+  }
+  
+  if (!item) {
+    return null;
+  }
+  
+  // Delete the found item
+  await Item.deleteOne({ _id: item._id });
+  return item;
 };
 
 exports.getItemStockSummary = async () => {

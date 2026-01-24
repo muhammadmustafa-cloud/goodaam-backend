@@ -18,6 +18,9 @@ router.get('/', ctrl.getSales);
 router.post('/mix', writeLimiter, ctrl.createMixOrder);
 router.get('/mix-orders', ctrl.getMixOrders);
 
+// Analytics
+router.get('/analytics', ctrl.getSalesAnalytics);
+
 router.get('/:id', validateObjectId, ctrl.getSaleById);
 router.put('/:id', validateObjectId, writeLimiter, validateSale, ctrl.updateSale);
 

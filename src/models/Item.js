@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { getNextSequence } = require('../utils/autoIncrement');
+const { getNextItemSequence } = require('../utils/autoIncrement');
 
 const itemSchema = new mongoose.Schema({
   id: {
@@ -16,6 +16,12 @@ const itemSchema = new mongoose.Schema({
     type: String,
     required: true,
     trim: true
+  },
+  category: {
+    type: String,
+    enum: ['daal', 'channa'],
+    required: true,
+    default: 'daal'
   }
 }, {
   timestamps: true
@@ -25,7 +31,7 @@ const itemSchema = new mongoose.Schema({
 itemSchema.pre('save', async function (next) {
   if (this.isNew && !this.id) {
     try {
-      this.id = await getNextSequence('Item');
+      this.id = await getNextItemSequence(this.category || 'daal');
     } catch (error) {
       return next(error);
     }

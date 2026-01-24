@@ -23,6 +23,36 @@ async function getNextSequence(modelName) {
 }
 
 /**
+ * Get the next sequence number for item categories
+ * Daal: 1100 series, Channa: 400 series
+ * 
+ * @param {string} category - Category name ('daal' or 'channa')
+ * @returns {Promise<number>} - Next sequence number for category
+ */
+async function getNextItemSequence(category) {
+  const categoryRanges = {
+    'daal': 1100,
+    'channa': 400
+  };
+  
+  const baseNumber = categoryRanges[category] || 1100;
+  const counterName = `Item_${category}`;
+  
+  // Use findOneAndUpdate with upsert for atomicity
+  const counter = await Counter.findByIdAndUpdate(
+    counterName,
+    { $inc: { sequence: 1 } },
+    { 
+      new: true, 
+      upsert: true,
+      setDefaultsOnInsert: true
+    }
+  );
+
+  return baseNumber + counter.sequence - 1;
+}
+
+/**
  * Reset counter for a model (useful for testing)
  * 
  * @param {string} modelName - Name of the model
@@ -49,6 +79,7 @@ async function getCurrentSequence(modelName) {
 
 module.exports = {
   getNextSequence,
+  getNextItemSequence,
   resetCounter,
   getCurrentSequence
 };

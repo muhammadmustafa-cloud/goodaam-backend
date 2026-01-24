@@ -413,6 +413,11 @@ async function createSingleSale(payload) {
       }
     }
 
+    // Get item details for analytics
+    const populatedLaadItem = await LaadItem.findById(finalLaadItemId).populate('itemId');
+    const itemName = populatedLaadItem?.itemId?.name || 'Unknown Item';
+    const itemCategory = populatedLaadItem?.itemId?.category || 'daal';
+
     // Create sale (use finalLaadItemId which may be different from selected if we found a better match)
     const sale = new Sale({
       customerId: customerObjectId,
@@ -428,6 +433,8 @@ async function createSingleSale(payload) {
       address: address || null,
       brokerName: brokerName || null,
       gatePassNumber: gatePassNumber || null,
+      itemName,
+      itemCategory,
       date: date ? new Date(date) : new Date()
     });
 
@@ -577,6 +584,11 @@ async function createSaleOrderFromItems(payload) {
       const calculatedWeight = lineBags * lineBagWeight;
       totalWeight += displayWeight > 0 ? displayWeight : calculatedWeight;
 
+      // Get item details for analytics
+      const populatedLaadItem = await LaadItem.findById(laadItemObjectId).populate('itemId');
+      const itemName = populatedLaadItem?.itemId?.name || 'Unknown Item';
+      const itemCategory = populatedLaadItem?.itemId?.category || 'daal';
+
       orderItems.push({
         laadItemId: laadItemObjectId,
         bagsSold: lineBags,
@@ -585,8 +597,15 @@ async function createSaleOrderFromItems(payload) {
         ratePerBag: effectiveRate !== null && Number.isFinite(effectiveRate) ? effectiveRate : null,
         totalAmount: lineTotalAmount,
         qualityGrade: line?.qualityGrade || qualityGrade || null,
+        itemName,
+        itemCategory
       });
     }
+
+    // Get item details for analytics (use first item for main level)
+    const firstItemDetails = await LaadItem.findById(orderItems[0].laadItemId).populate('itemId');
+    const mainItemName = firstItemDetails?.itemId?.name || 'Unknown Item';
+    const mainItemCategory = firstItemDetails?.itemId?.category || 'daal';
 
     const order = new Sale({
       customerId: customerObjectId,
@@ -599,6 +618,8 @@ async function createSaleOrderFromItems(payload) {
       totalWeight,
       totalAmount: hasAnyAmount ? totalAmount : null,
       gatePassNumber: gatePassNumber || null,
+      itemName: mainItemName, // For analytics
+      itemCategory: mainItemCategory, // For analytics
       date: date ? new Date(date) : new Date(),
       address: address || null,
       truckNumber: truckNumber || null,
@@ -1505,4 +1526,138 @@ exports.updateSale = async (id, payload) => {
     .lean();
 
   return formatSale(updatedSale);
+};
+
+exports.getSalesAnalytics = async (filters = {}) => {
+  const { category, dateRange } = filters;
+  
+  // Build date filter
+  let dateFilter = {};
+  if (dateRange && dateRange !== 'all') {
+    const now = new Date();
+    let startDate = new Date();
+    
+    switch (dateRange) {
+      case '7days':
+        startDate.setDate(now.getDate() - 7);
+        break;
+      case '30days':
+        startDate.setDate(now.getDate() - 30);
+        break;
+      case '90days':
+        startDate.setDate(now.getDate() - 90);
+        break;
+    }
+    
+    dateFilter = {
+      date: {
+        $gte: startDate,
+        $lte: now
+      }
+    };
+  }
+  
+  // Build match stage for aggregation
+  const matchStage = {
+    ...dateFilter
+  };
+  
+  // Add category filter if specified
+  if (category && category !== 'all') {
+    matchStage.itemCategory = category;
+  }
+  
+  // Aggregation pipeline - simplified to use itemCategory field
+  const pipeline = [
+    {
+      $match: matchStage
+    },
+    {
+      $lookup: {
+        from: 'customers',
+        localField: 'customerId',
+        foreignField: '_id',
+        as: 'customer'
+      }
+    },
+    {
+      $unwind: {
+        path: '$customer',
+        preserveNullAndEmptyArrays: true
+      }
+    }
+  ];
+  
+  // Add group stage for summary
+  const summaryPipeline = [...pipeline, {
+    $group: {
+      _id: null,
+      totalSales: { $sum: 1 },
+      totalBags: { $sum: '$bagsSold' },
+      daalSales: {
+        $sum: {
+          $cond: [
+            { $eq: ['$itemCategory', 'daal'] },
+            1,
+            0
+          ]
+        }
+      },
+      channaSales: {
+        $sum: {
+          $cond: [
+            { $eq: ['$itemCategory', 'channa'] },
+            1,
+            0
+          ]
+        }
+      }
+    }
+  }];
+  
+  // Add project stage for sales data
+  const salesPipeline = [...pipeline, {
+    $project: {
+      id: '$id',
+      date: '$date',
+      bagsSold: '$bagsSold',
+      itemName: '$itemName',
+      itemCategory: '$itemCategory',
+      customerName: '$customer.name',
+      brokerName: '$brokerName',
+      qualityGrade: '$qualityGrade',
+      laadNumber: '$laadNumber',
+      bagWeight: '$bagWeight',
+      totalWeight: { $multiply: ['$bagsSold', '$bagWeight'] }
+    }
+  }, {
+    $sort: { date: -1 }
+  }];
+  
+  try {
+    // Execute both aggregations
+    const [summaryResult, salesResult] = await Promise.all([
+      Sale.aggregate(summaryPipeline),
+      Sale.aggregate(salesPipeline)
+    ]);
+    
+    // Extract summary data
+    const summary = summaryResult[0] || {
+      totalSales: 0,
+      totalBags: 0,
+      totalRevenue: 0,
+      daalSales: 0,
+      channaSales: 0,
+      daalRevenue: 0,
+      channaRevenue: 0
+    };
+    
+    return {
+      summary,
+      sales: salesResult
+    };
+  } catch (error) {
+    console.error('Error in getSalesAnalytics:', error);
+    throw error;
+  }
 };
