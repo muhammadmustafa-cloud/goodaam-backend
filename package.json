@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "nodemon index.js ",
     "start": "node index.js",
-    "poststart": "node src/scripts/oneTimeStockCorrection.js",
+    "poststart": "node src/scripts/oneTimeStockCorrection.js && node src/scripts/firstTimeCategoryMigration.js",
     "db:seed": "node src/scripts/seedAdmin.js",
     "seed:admin": "node src/scripts/seedAdmin.js",
     "add:user": "node scripts/addUser.js",
@@ -17,6 +17,7 @@
     "migrate:itemCategory": "node src/scripts/migrateItemCategory.js",
     "migrate:salesCategories": "node src/scripts/migrateSalesCategories.js",
     "migrate:allSalesAnalytics": "node src/scripts/migrateAllSalesToAnalytics.js",
+    "migrate:allSalesCategories": "node src/scripts/migrateAllSalesCategories.js",
     "fix:stock-calculations": "node src/scripts/fixStockCalculations.js",
     "analyze:database": "node src/scripts/analyzeDatabase.js",
     "one-time-fix": "node src/scripts/oneTimeStockCorrection.js",
