@@ -414,6 +414,13 @@ exports.getStockMovement = async (req, res) => {
           }
         ]
       })
+      .populate({
+        path: 'items.laadItemId',
+        populate: [
+          { path: 'itemId', model: 'Item' },
+          { path: 'laadId', model: 'Laad' },
+        ],
+      })
       .sort({ createdAt: -1 })
       .lean();
 
@@ -442,22 +449,52 @@ exports.getStockMovement = async (req, res) => {
       });
     });
 
+    // Handle both single-item and multi-item sales
     sales.forEach(sale => {
-      movements.push({
-        type: 'OUT',
-        date: sale.date || sale.createdAt,
-        reference: `SALE-${sale._id}`,
-        laadNumber: sale.laadNumber || sale.laadItemId?.laadId?.laadNumber || 'N/A',
-        gatePassNumber: sale.gatePassNumber || sale.laadItemId?.laadId?.gatePassNumber || 'N/A',
-        party: sale.customerId?.name || 'Unknown',
-        item: sale.laadItemId?.itemId?.name || 'Unknown',
-        quality: sale.qualityGrade || sale.laadItemId?.qualityGrade || sale.laadItemId?.itemId?.quality || 'N/A',
-        bags: sale.bagsSold,
-        rate: parseFloat(sale.ratePerBag) || 0,
-        amount: parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0)),
-        truckNumber: sale.truckNumber || sale.laadItemId?.laadId?.vehicleNumber || 'N/A',
-        bagWeight: sale.bagWeight || null,
-      });
+      // Check if this is a multi-item sale
+      if (Array.isArray(sale.items) && sale.items.length > 0) {
+        // Multi-item sale - add each item as a separate movement
+        sale.items.forEach((line, idx) => {
+          const laadItemId = line?.laadItemId?._id?.toString?.() || line?.laadItemId?.toString?.() || null;
+          const itemName = line?.laadItemId?.itemId?.name || 'Unknown';
+          const laadNumber = line?.laadItemId?.laadId?.laadNumber || sale.laadNumber || 'N/A';
+          const gatePass = sale.gatePassNumber || line?.laadItemId?.laadId?.gatePassNumber || 'N/A';
+          const truckNum = sale.truckNumber || line?.laadItemId?.laadId?.vehicleNumber || 'N/A';
+
+          movements.push({
+            type: 'OUT',
+            date: sale.date || sale.createdAt,
+            reference: `SALE-${sale._id}`,
+            laadNumber: laadNumber,
+            gatePassNumber: gatePass,
+            party: sale.customerId?.name || 'Unknown',
+            item: itemName,
+            quality: line.qualityGrade || line?.laadItemId?.qualityGrade || 'N/A',
+            bags: line.bagsSold || 0,
+            rate: parseFloat(line.ratePerBag) || parseFloat(sale.ratePerBag) || 0,
+            amount: parseFloat(line.totalAmount) || (line.bagsSold * (parseFloat(line.ratePerBag) || 0)),
+            truckNumber: truckNum,
+            bagWeight: line.bagWeight || null,
+          });
+        });
+      } else {
+        // Single-item sale (legacy)
+        movements.push({
+          type: 'OUT',
+          date: sale.date || sale.createdAt,
+          reference: `SALE-${sale._id}`,
+          laadNumber: sale.laadNumber || sale.laadItemId?.laadId?.laadNumber || 'N/A',
+          gatePassNumber: sale.gatePassNumber || sale.laadItemId?.laadId?.gatePassNumber || 'N/A',
+          party: sale.customerId?.name || 'Unknown',
+          item: sale.laadItemId?.itemId?.name || 'Unknown',
+          quality: sale.qualityGrade || sale.laadItemId?.qualityGrade || sale.laadItemId?.itemId?.quality || 'N/A',
+          bags: sale.bagsSold,
+          rate: parseFloat(sale.ratePerBag) || 0,
+          amount: parseFloat(sale.totalAmount) || (sale.bagsSold * (parseFloat(sale.ratePerBag) || 0)),
+          truckNumber: sale.truckNumber || sale.laadItemId?.laadId?.vehicleNumber || 'N/A',
+          bagWeight: sale.bagWeight || null,
+        });
+      }
     });
 
     // Sort by date

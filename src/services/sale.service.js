@@ -1550,111 +1550,130 @@ exports.getSalesAnalytics = async (filters = {}) => {
     }
     
     dateFilter = {
-      date: {
-        $gte: startDate,
-        $lte: now
-      }
+      $or: [
+        { date: { $gte: startDate, $lte: now } },
+        { createdAt: { $gte: startDate, $lte: now } }
+      ]
     };
   }
-  
-  // Build match stage for aggregation
-  const matchStage = {
-    ...dateFilter
-  };
-  
-  // Add category filter if specified
-  if (category && category !== 'all') {
-    matchStage.itemCategory = category;
-  }
-  
-  // Aggregation pipeline - simplified to use itemCategory field
-  const pipeline = [
-    {
-      $match: matchStage
-    },
-    {
-      $lookup: {
-        from: 'customers',
-        localField: 'customerId',
-        foreignField: '_id',
-        as: 'customer'
-      }
-    },
-    {
-      $unwind: {
-        path: '$customer',
-        preserveNullAndEmptyArrays: true
-      }
-    }
-  ];
-  
-  // Add group stage for summary
-  const summaryPipeline = [...pipeline, {
-    $group: {
-      _id: null,
-      totalSales: { $sum: 1 },
-      totalBags: { $sum: '$bagsSold' },
-      daalSales: {
-        $sum: {
-          $cond: [
-            { $eq: ['$itemCategory', 'daal'] },
-            1,
-            0
-          ]
-        }
-      },
-      channaSales: {
-        $sum: {
-          $cond: [
-            { $eq: ['$itemCategory', 'channa'] },
-            1,
-            0
-          ]
-        }
-      }
-    }
-  }];
-  
-  // Add project stage for sales data
-  const salesPipeline = [...pipeline, {
-    $project: {
-      id: '$id',
-      date: '$date',
-      bagsSold: '$bagsSold',
-      itemName: '$itemName',
-      itemCategory: '$itemCategory',
-      customerName: '$customer.name',
-      brokerName: '$brokerName',
-      qualityGrade: '$qualityGrade',
-      laadNumber: '$laadNumber',
-      bagWeight: '$bagWeight',
-      totalWeight: { $multiply: ['$bagsSold', '$bagWeight'] }
-    }
-  }, {
-    $sort: { date: -1 }
-  }];
   
   try {
-    // Execute both aggregations
-    const [summaryResult, salesResult] = await Promise.all([
-      Sale.aggregate(summaryPipeline),
-      Sale.aggregate(salesPipeline)
-    ]);
-    
-    // Extract summary data
-    const summary = summaryResult[0] || {
-      totalSales: 0,
-      totalBags: 0,
-      totalRevenue: 0,
-      daalSales: 0,
-      channaSales: 0,
-      daalRevenue: 0,
-      channaRevenue: 0
+    // Fetch sales with proper population for both single and multi-item orders
+    const sales = await Sale.find(dateFilter.length ? dateFilter : {})
+      .populate('customerId', 'name')
+      .populate({
+        path: 'laadItemId',
+        populate: [
+          { path: 'itemId', model: 'Item' },
+          { path: 'laadId', model: 'Laad' }
+        ]
+      })
+      .populate({
+        path: 'items.laadItemId',
+        populate: [
+          { path: 'itemId', model: 'Item' },
+          { path: 'laadId', model: 'Laad' }
+        ]
+      })
+      .sort({ date: -1, createdAt: -1 })
+      .lean();
+
+    // Normalize sales into individual line items to handle both single and multi-item sales
+    const salesLines = [];
+    let totalSales = 0;
+    let totalBags = 0;
+    let daalSales = 0;
+    let channaSales = 0;
+
+    sales.forEach(sale => {
+      // Handle multi-item sales
+      if (Array.isArray(sale.items) && sale.items.length > 0) {
+        sale.items.forEach((line) => {
+          const itemName = line?.laadItemId?.itemId?.name || 'Unknown';
+          const laadNumber = line?.laadItemId?.laadId?.laadNumber || sale.laadNumber || 'N/A';
+          const bagsSold = line.bagsSold || 0;
+          const bagWeight = line.bagWeight || 0;
+          
+          // Get category directly from Item model
+          const itemCategory = line?.laadItemId?.itemId?.category || 'other';
+          
+          // Apply category filter
+          if (category && category !== 'all' && itemCategory !== category) {
+            return; // Skip this item if category doesn't match
+          }
+
+          totalSales++;
+          totalBags += bagsSold;
+          
+          if (itemCategory === 'daal') daalSales++;
+          if (itemCategory === 'channa') channaSales++;
+
+          salesLines.push({
+            id: `${sale._id}-${line.laadItemId?.toString?.() || ''}`,
+            date: sale.date || sale.createdAt,
+            bagsSold: bagsSold,
+            itemName: itemName,
+            itemCategory: itemCategory,
+            customerName: sale.customerId?.name || 'Unknown',
+            brokerName: sale.brokerName || null,
+            qualityGrade: line.qualityGrade || line?.laadItemId?.qualityGrade || 'N/A',
+            laadNumber: laadNumber,
+            bagWeight: bagWeight,
+            totalWeight: bagsSold * bagWeight,
+            ratePerBag: parseFloat(line.ratePerBag) || 0,
+            totalAmount: parseFloat(line.totalAmount) || (bagsSold * (parseFloat(line.ratePerBag) || 0))
+          });
+        });
+      } else {
+        // Single-item sale (legacy)
+        const itemName = sale.laadItemId?.itemId?.name || sale.itemName || 'Unknown';
+        const laadNumber = sale.laadNumber || sale.laadItemId?.laadId?.laadNumber || 'N/A';
+        const bagsSold = sale.bagsSold || 0;
+        const bagWeight = sale.bagWeight || 0;
+        
+        // Get category directly from Item model
+        const itemCategory = sale.laadItemId?.itemId?.category || 'other';
+        
+        // Apply category filter
+        if (category && category !== 'all' && itemCategory !== category) {
+          return; // Skip if category doesn't match
+        }
+
+        totalSales++;
+        totalBags += bagsSold;
+        
+        if (itemCategory === 'daal') daalSales++;
+        if (itemCategory === 'channa') channaSales++;
+
+        salesLines.push({
+          id: sale._id.toString(),
+          date: sale.date || sale.createdAt,
+          bagsSold: bagsSold,
+          itemName: itemName,
+          itemCategory: itemCategory,
+          customerName: sale.customerId?.name || 'Unknown',
+          brokerName: sale.brokerName || null,
+          qualityGrade: sale.qualityGrade || sale.laadItemId?.qualityGrade || 'N/A',
+          laadNumber: laadNumber,
+          bagWeight: bagWeight,
+          totalWeight: bagsSold * bagWeight,
+          ratePerBag: parseFloat(sale.ratePerBag) || 0,
+          totalAmount: parseFloat(sale.totalAmount) || (bagsSold * (parseFloat(sale.ratePerBag) || 0))
+        });
+      }
+    });
+
+    const summary = {
+      totalSales: salesLines.length,
+      totalBags: totalBags,
+      totalRevenue: salesLines.reduce((sum, s) => sum + (s.totalAmount || 0), 0),
+      daalSales: daalSales,
+      channaSales: channaSales
     };
-    
+
     return {
       summary,
-      sales: salesResult
+      sales: salesLines
     };
   } catch (error) {
     console.error('Error in getSalesAnalytics:', error);
