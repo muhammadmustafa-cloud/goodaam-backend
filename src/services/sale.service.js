@@ -1621,7 +1621,8 @@ exports.getSalesAnalytics = async (filters = {}) => {
             bagWeight: bagWeight,
             totalWeight: bagsSold * bagWeight,
             ratePerBag: parseFloat(line.ratePerBag) || 0,
-            totalAmount: parseFloat(line.totalAmount) || (bagsSold * (parseFloat(line.ratePerBag) || 0))
+            totalAmount: parseFloat(line.totalAmount) || (bagsSold * (parseFloat(line.ratePerBag) || 0)),
+            gatePassNumber: sale.gatePassNumber || null
           });
         });
       } else {
@@ -1658,7 +1659,8 @@ exports.getSalesAnalytics = async (filters = {}) => {
           bagWeight: bagWeight,
           totalWeight: bagsSold * bagWeight,
           ratePerBag: parseFloat(sale.ratePerBag) || 0,
-          totalAmount: parseFloat(sale.totalAmount) || (bagsSold * (parseFloat(sale.ratePerBag) || 0))
+          totalAmount: parseFloat(sale.totalAmount) || (bagsSold * (parseFloat(sale.ratePerBag) || 0)),
+          gatePassNumber: sale.gatePassNumber || null
         });
       }
     });
